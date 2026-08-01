@@ -1,0 +1,33 @@
+{
+  "note": "Call A output shape. quotes match tests/fixtures/userAnswers.ts::groundedAnswer.",
+  "evidence": [
+    {
+      "element_id": "E001",
+      "quote": "みんなは効率の問題だと言っていましたが、自分には信頼の問題に見えました",
+      "type": "personal_experience",
+      "strength": 0.8,
+      "reliability": 0.75,
+      "direction": "positive",
+      "context": "周囲と異なる枠組みで同じ事象を捉えた経験を語っている。"
+    },
+    {
+      "element_id": "E051",
+      "quote": "反対されましたが、最後は自分の判断で進めました",
+      "type": "decision_example",
+      "strength": 0.7,
+      "reliability": 0.7,
+      "direction": "positive",
+      "context": "反対意見の中で自分の判断を最終決定として引き受けている。"
+    },
+    {
+      "element_id": "E029",
+      "quote": "結果は失敗でしたが、記録に残して次の判断に使っています",
+      "type": "behavioral_example",
+      "strength": 0.6,
+      "reliability": 0.65,
+      "direction": "positive",
+      "context": "失敗を損失ではなく情報として扱う行動を述べている。"
+    }
+  ],
+  "contradiction_candidates": []
+}

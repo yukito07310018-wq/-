@@ -1,0 +1,26 @@
+{
+  "note": "Call B output shape.",
+  "questions": [
+    {
+      "text": "誰かの反対を押し切って決めたことはありますか。そのとき何を根拠にしましたか。",
+      "target_elements": ["E051", "E032"],
+      "probe_kind": "decision",
+      "expected_yield": 0.8,
+      "rationale": "判断独立性の証拠が不足している。"
+    },
+    {
+      "text": "続けているうちに、やり方を自分で変えたことはありますか。どこを変えましたか。",
+      "target_elements": ["E066", "E064"],
+      "probe_kind": "behavior",
+      "expected_yield": 0.7,
+      "rationale": "行動特性の証拠がない。"
+    },
+    {
+      "text": "十年後に自分の仕事がどう変わっていると思いますか。その理由も教えてください。",
+      "target_elements": ["E018", "E097"],
+      "probe_kind": "future",
+      "expected_yield": 0.5,
+      "rationale": "未来志向が未探索。"
+    }
+  ]
+}

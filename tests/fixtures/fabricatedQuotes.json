@@ -1,0 +1,33 @@
+{
+  "note": "Call A output where two of three quotes never appear in the user's answer.",
+  "evidence": [
+    {
+      "element_id": "E001",
+      "quote": "みんなは効率の問題だと言っていましたが、自分には信頼の問題に見えました",
+      "type": "personal_experience",
+      "strength": 0.8,
+      "reliability": 0.75,
+      "direction": "positive",
+      "context": "実在する引用。"
+    },
+    {
+      "element_id": "E032",
+      "quote": "私は常に自分の信念を貫く強い人間だと自負しています",
+      "type": "self_description",
+      "strength": 0.9,
+      "reliability": 0.9,
+      "direction": "positive",
+      "context": "捏造された引用。ユーザーはこう言っていない。"
+    },
+    {
+      "element_id": "E074",
+      "quote": "組織全体を動かした経験が何度もあります",
+      "type": "explicit_statement",
+      "strength": 0.85,
+      "reliability": 0.8,
+      "direction": "positive",
+      "context": "捏造された引用。"
+    }
+  ],
+  "contradiction_candidates": []
+}
