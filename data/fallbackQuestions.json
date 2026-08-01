@@ -1,0 +1,100 @@
+{
+  "questions": [
+    {
+      "question_id": "FB01",
+      "text": "最近、自分でも意外だったと思う選択をしたのはどんな場面でしたか。そのとき何を考えていたか教えてください。",
+      "target_elements": ["E051", "E031", "E081"],
+      "probe_kind": "decision",
+      "expected_yield": 0.7,
+      "opening": true
+    },
+    {
+      "question_id": "FB02",
+      "text": "周りの人と自分とで、見え方が違っていたと感じた出来事はありますか。どこが違ったのかも教えてください。",
+      "target_elements": ["E001", "E007", "E044"],
+      "probe_kind": "experience",
+      "expected_yield": 0.7,
+      "opening": true
+    },
+    {
+      "question_id": "FB03",
+      "text": "うまくいかなかった経験を一つ挙げるとしたら何ですか。そのあと、あなたは何を変えましたか。",
+      "target_elements": ["E029", "E069", "E085"],
+      "probe_kind": "failure",
+      "expected_yield": 0.75,
+      "opening": false
+    },
+    {
+      "question_id": "FB04",
+      "text": "誰にも頼まれていないのに、自分から時間を使って続けていることはありますか。何が続けさせているのでしょう。",
+      "target_elements": ["E021", "E063", "E065"],
+      "probe_kind": "behavior",
+      "expected_yield": 0.7,
+      "opening": true
+    },
+    {
+      "question_id": "FB05",
+      "text": "これだけは譲れないと感じたために、周囲と意見が食い違った場面を教えてください。",
+      "target_elements": ["E032", "E076", "E038"],
+      "probe_kind": "conflict",
+      "expected_yield": 0.7,
+      "opening": false
+    },
+    {
+      "question_id": "FB06",
+      "text": "十年後の社会が今と一つだけ変わるとしたら、何が変わってほしいですか。その理由も教えてください。",
+      "target_elements": ["E097", "E018", "E093"],
+      "probe_kind": "future",
+      "expected_yield": 0.6,
+      "opening": false
+    },
+    {
+      "question_id": "FB07",
+      "text": "誰かと一緒に何かを作ったとき、あなたは自然とどんな役回りになっていましたか。具体的な場面で教えてください。",
+      "target_elements": ["E080", "E073", "E074"],
+      "probe_kind": "relationship",
+      "expected_yield": 0.7,
+      "opening": false
+    },
+    {
+      "question_id": "FB08",
+      "text": "時間もお金も制約がなかったとしたら、まず何に取りかかりますか。なぜそれを選ぶのかも教えてください。",
+      "target_elements": ["E035", "E037", "E011"],
+      "probe_kind": "hypothetical",
+      "expected_yield": 0.6,
+      "opening": true
+    },
+    {
+      "question_id": "FB09",
+      "text": "やり方が決まっている作業を、自分なりに変えたことはありますか。どこをどう変えたのか教えてください。",
+      "target_elements": ["E066", "E002", "E013"],
+      "probe_kind": "behavior",
+      "expected_yield": 0.7,
+      "opening": false
+    },
+    {
+      "question_id": "FB10",
+      "text": "何かを選んだせいで、別の何かを手放した経験はありますか。そのとき何を基準に決めましたか。",
+      "target_elements": ["E056", "E055", "E059"],
+      "probe_kind": "decision",
+      "expected_yield": 0.75,
+      "opening": false
+    },
+    {
+      "question_id": "FB11",
+      "text": "自分について、以前より正確に分かるようになったと感じることはありますか。何がきっかけでしたか。",
+      "target_elements": ["E081", "E087", "E088"],
+      "probe_kind": "experience",
+      "expected_yield": 0.65,
+      "opening": false
+    },
+    {
+      "question_id": "FB12",
+      "text": "仕事や生活の中で、これはおかしいと感じながら続いている仕組みはありますか。どこが問題だと思いますか。",
+      "target_elements": ["E047", "E046", "E041"],
+      "probe_kind": "value",
+      "expected_yield": 0.65,
+      "opening": false
+    }
+  ]
+}

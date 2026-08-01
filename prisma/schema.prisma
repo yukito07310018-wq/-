@@ -1,0 +1,140 @@
+// SQLite has no array type: every array is stored as a JSON string and is
+// converted at the repository boundary (src/lib/db/repository.ts) so domain
+// code never sees JSON.parse.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id        String    @id @default(cuid())
+  createdAt DateTime  @default(now())
+  sessions  Session[]
+}
+
+model Session {
+  id             String   @id // nanoid(21) — unguessable, acts as the access token (§25)
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status         String   @default("active") // active | completed | aborted
+  processing     Boolean  @default(false)
+  turnCount      Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  turns          ConversationTurn[]
+  elementStates  ElementState[]
+  evidence       Evidence[]
+  contradictions Contradiction[]
+  questions      QuestionHistory[]
+  snapshots      AxisSnapshot[]
+
+  @@index([status])
+}
+
+model ConversationTurn {
+  id        String   @id @default(cuid())
+  sessionId String
+  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  turnIndex Int
+  role      String // user | assistant
+  content   String
+  createdAt DateTime @default(now())
+
+  @@unique([sessionId, turnIndex, role])
+}
+
+model ElementState {
+  id                String  @id @default(cuid())
+  sessionId         String
+  session           Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  elementId         String
+  score             Float   @default(50)
+  confidence        Float   @default(0)
+  evidenceCount     Int     @default(0)
+  evidenceDiversity Float   @default(0)
+  evidenceTypes     String  @default("[]") // JSON array
+  lastUpdatedTurn   Int     @default(0)
+
+  histories ScoreHistory[]
+
+  @@unique([sessionId, elementId])
+}
+
+model Evidence {
+  id          String   @id @default(cuid())
+  sessionId   String
+  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  turnId      Int
+  elementId   String
+  quote       String
+  type        String
+  strength    Float
+  reliability Float
+  direction   String
+  context     String
+  createdAt   DateTime @default(now())
+
+  @@index([sessionId, elementId])
+}
+
+model ScoreHistory {
+  id               String       @id @default(cuid())
+  elementStateId   String
+  elementState     ElementState @relation(fields: [elementStateId], references: [id], onDelete: Cascade)
+  turn             Int
+  score            Float
+  confidence       Float
+  delta            Float
+  causeEvidenceIds String       @default("[]") // JSON array
+  createdAt        DateTime     @default(now())
+
+  @@index([elementStateId])
+}
+
+model Contradiction {
+  id             String  @id @default(cuid())
+  sessionId      String
+  session        Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  elementIds     String // JSON array
+  evidenceAId    String
+  evidenceBId    String
+  severity       Float
+  status         String  @default("unresolved")
+  detectedTurn   Int
+  resolutionNote String?
+
+  @@index([sessionId, status])
+}
+
+model QuestionHistory {
+  id             String   @id @default(cuid())
+  sessionId      String
+  session        Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  turn           Int
+  text           String
+  targetElements String // JSON array
+  probeKind      String
+  qValue         Float
+  createdAt      DateTime @default(now())
+
+  @@index([sessionId])
+}
+
+model AxisSnapshot {
+  id         String  @id @default(cuid())
+  sessionId  String
+  session    Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  turn       Int
+  axisId     String
+  score      Float
+  confidence Float
+  coverage   Float
+
+  @@index([sessionId, turn])
+}
