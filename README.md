@@ -90,6 +90,12 @@ AIとの対話から、**100要素・10軸の個人モデル**を継続的に構
 
 ## 3. セットアップ
 
+AIバックエンドは **Anthropic API** と **Ollama（ローカル・APIキー不要）** のどちらかを選べます。
+`src/lib/ai/client.ts` が唯一のLLM呼び出し窓口で、`AI_PROVIDER` で切り替わります。
+プロンプト・スキーマ・エンジン層はどちらのバックエンドでも一切変わりません。
+
+### 3.1 Anthropic APIを使う場合
+
 ```bash
 npm install
 cp .env.example .env        # ANTHROPIC_API_KEY を設定
@@ -97,17 +103,48 @@ npx prisma migrate deploy   # SQLite を作成
 npm run dev                 # http://localhost:3000
 ```
 
+### 3.2 Ollamaを使う場合（APIキー不要・完全ローカル）
+
+1. https://ollama.com/download からOllamaをインストール
+2. モデルを取得して起動しておく
+
+   ```bash
+   ollama pull qwen2.5:7b   # 初回のみ。数GBのダウンロード
+   ollama serve             # 別ターミナルで常駐させる
+   ```
+
+3. `.env` を以下のように設定
+
+   ```
+   AI_PROVIDER=ollama
+   OLLAMA_BASE_URL=http://127.0.0.1:11434
+   OLLAMA_MODEL=qwen2.5:7b
+   DATABASE_URL="file:./dev.db"
+   ```
+
+4. `npm install && npx prisma migrate deploy && npm run dev`
+
+CPU推論はホストAPIよりかなり遅いため、Ollama利用時はリクエストタイムアウトを既定180秒に
+延長しています（`AI_REQUEST_TIMEOUT_MS` で上書き可）。マシンが非力な場合は `qwen2.5:3b` や
+`llama3.2:3b` など軽量モデルに変更してください。JSON出力の安定性が悪化する場合は
+指示追従性の高いモデル（`qwen2.5` 系など）を推奨します。
+
 ### 環境変数
 
 | 変数 | 必須 | 既定値 | 説明 |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | ✅ | — | 未設定なら `/api/interview/start` が日本語のエラーを返します |
+| `AI_PROVIDER` | | `anthropic` | `anthropic` または `ollama` |
+| `ANTHROPIC_API_KEY` | `AI_PROVIDER=anthropic`時 | — | 未設定なら `/api/interview/start` が日本語のエラーを返します |
 | `ANTHROPIC_MODEL` | | `claude-sonnet-4-5` | 既定値は `src/lib/ai/client.ts` の `DEFAULT_MODEL` |
 | `ANTHROPIC_BASE_URL` | | Anthropic本番 | プロキシ／ローカルモック用 |
+| `OLLAMA_BASE_URL` | | `http://127.0.0.1:11434` | Ollamaサーバーのアドレス |
+| `OLLAMA_MODEL` | | `qwen2.5:7b` | `ollama pull` 済みのモデル名 |
+| `AI_REQUEST_TIMEOUT_MS` | | Anthropic: 30000 / Ollama: 180000 | 1回のLLM呼び出しのタイムアウト |
 | `DATABASE_URL` | ✅ | `file:./dev.db` | SQLiteの場所 |
 
 `verifyModelAccess()`（`src/lib/ai/client.ts`）でモデルへの疎通確認ができます。失敗時は
-モデル名と環境変数名を含む日本語メッセージを投げます。
+プロバイダに応じた日本語メッセージ（APIキー未設定 / `ollama pull` の指示 / `ollama serve`
+の起動指示など）を投げます。
 
 ### コマンド
 
@@ -123,13 +160,22 @@ node scripts/inspectSession.mjs <id> # セッションの行数を確認
 
 ### APIキーなしで動作確認する
 
-`scripts/mockAnthropic.mjs` はMessages APIの最小スタブです。Evidenceの引用を実際の
-発話から切り出すため、引用検証を含む全経路が通ります。
+`scripts/mockAnthropic.mjs`（Anthropic Messages API用）と `scripts/mockOllama.mjs`
+（Ollama `/api/chat` `/api/show` 用）はどちらも最小スタブです。Evidenceの引用を実際の
+発話から切り出すため、引用検証を含む全経路が通ります。`mockOllama.mjs` は3ターンに1回、
+応答をmarkdownフェンス＋前置き文で包んで返すため、Ollama側で実際に起きがちな
+「行儀の悪いJSON」に対する `extractJson` の耐性も検証できます。
 
 ```bash
+# Anthropic版
 node scripts/mockAnthropic.mjs &
 ANTHROPIC_BASE_URL=http://127.0.0.1:8787 ANTHROPIC_API_KEY=mock npm run dev &
 node scripts/smokeInterview.mjs      # start → 全ターン → profile を一括実行
+
+# Ollama版（AI_PROVIDERの切り替えだけで同じsmokeInterview.mjsが使える）
+node scripts/mockOllama.mjs &
+AI_PROVIDER=ollama OLLAMA_BASE_URL=http://127.0.0.1:11434 OLLAMA_MODEL=mock-model npm run dev &
+node scripts/smokeInterview.mjs
 ```
 
 回答に `MOCK_CRISIS` / `MOCK_DISTRESS` を含めると §9.2 の分岐を再現できます。
@@ -160,7 +206,10 @@ SQLiteに配列型はないため、配列はすべて**JSON文字列**で保持
 ## 5. AI処理フロー
 
 1回のターンで **4回** LLMを呼びます。抽出（温度0）と生成（温度0.7）を1回にまとめると
-抽出精度が落ちるため、意図的に分けています。
+抽出精度が落ちるため、意図的に分けています。バックエンドがAnthropicかOllamaかは
+`src/lib/ai/client.ts` の `callModel()` が吸収し、この4呼び出しの構造自体は変わりません。
+Ollama使用時は `format: "json"`（Ollamaのネイティブ機能）でJSON出力を促し、Anthropic使用時は
+アシスタントターンの部分プリフィル（`'{"evidence":'` 等）でJSON開始を強制します。
 
 | 呼び出し | System Prompt | 温度 | max_tokens | 出力 |
 |---|---|---|---|---|
@@ -400,6 +449,10 @@ npm test     # 11ファイル / 105ケース
 | AI全断 | 会話継続（フォールバック質問）・Evidence 0件・クラッシュなし |
 | `DELETE /api/session/:id` | 8テーブル全行が0件に（sessions/turns/elementStates/evidence/scoreHistory/contradictions/questions/snapshots） |
 | 結果画面 | HTTP 200・レーダー・「情報不足」バッジ・Evidence一覧・免責を表示 |
+| Ollama経路（`scripts/mockOllama.mjs`） | `verifyModelAccess()` 成功・モデル未pull/サーバー未起動それぞれで日本語エラー / start→12ターンでEvidence 22件・軸にNaNなし / 3ターンに1回のmarkdownフェンス付き応答も`extractJson`で正しく解析 |
+
+**Ollamaは実際のサーバーに対しては未検証です**（§13参照）。上記はモックスタブに対する
+経路検証であり、実モデルの応答品質は保証していません。
 
 ---
 
@@ -466,6 +519,24 @@ Prisma 7 では `datasource.url` をスキーマに書けなくなったため�
 （テストなど）では検証が形だけになりました。`model/elementIds.ts` から直接読む方式に変更し、
 どこから使っても実在チェックが効くようにしています。
 
+**#12 AIバックエンドをAnthropic/Ollamaで切り替え可能にした**
+Anthropic APIの利用にはAPIキーと課金が必要なため、`AI_PROVIDER=ollama` で完全ローカル・
+無課金でも動かせるようにしました。変更は `src/lib/ai/client.ts` の中に閉じています
+（`callModel()` がプロバイダごとの実装へ振り分ける）。`callModelStructured()` が常に
+`json: true` を渡すように変更し、Ollama側はこれを `format: "json"`（ネイティブJSONモード）
+に変換します。Anthropicのプリフィル方式（アシスタントターンに `'{"evidence":'` を先置き
+してJSON開始を強制する手法）はOllamaのチャットテンプレートでは信頼できないため使わず、
+JSONモード＋既存の `extractJson`/スキーマ再試行ループのみに寄せています。
+タイムアウトはCPU推論を考慮しOllama既定180秒（Anthropicは30秒のまま）とし、
+`AI_REQUEST_TIMEOUT_MS` で上書き可能にしました。
+なお、この開発コンテナのネットワークポリシーは `ollama.com` への接続を拒否するため
+（`curl https://ollama.com/install.sh` が403）、実機のOllamaに対する動作確認はできません
+でした。代わりに `scripts/mockOllama.mjs`（Ollamaの `/api/chat` `/api/show` を模したスタブ、
+3ターンに1回わざとmarkdownフェンス付きの行儀の悪いJSONを返す）を作成し、
+`verifyModelAccess()` の成功・失敗（モデル未pull／サーバー未起動）双方のエラーメッセージ、
+および `smokeInterview.mjs` によるstart→12ターン→profileの一連の流れを検証しました。
+**公開・実運用の前に、実際のOllamaサーバーと実モデルに対する動作確認を別途行ってください。**
+
 ---
 
 ## 13. 既知の制約
@@ -481,6 +552,11 @@ Prisma 7 では `datasource.url` をスキーマに書けなくなったため�
   複数プロセスで動かす場合はPostgreSQLへの移行を推奨します。
 - **多言語対応なし。** UIとAIの発話は日本語のみです。
 - **相談窓口情報は 2026-08-01 時点のものです。** 公開前に必ず再確認してください。
+- **Ollama連携は実機未検証。** 開発環境のネットワークポリシーで `ollama.com` に到達できず、
+  実際のOllamaサーバーに対しては確認していません（§12 実装判断ログ #12）。モックによる
+  経路検証は行っていますが、実モデルでのJSON出力の安定性・Evidence抽出の質は
+  モデルやプロンプトテンプレートに依存します。小型モデルほどスキーマ違反が増える傾向が
+  あるため、`ollama pull qwen2.5:7b` 以上の指示追従性を持つモデルを推奨します。
 
 ---
 

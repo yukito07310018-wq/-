@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiError, toApiError } from "@/lib/api/errors";
 import { pickOpeningQuestion } from "@/lib/engine/fallbackQuestions";
+import { hasAiCredentials } from "@/lib/ai/client";
 import * as repo from "@/lib/db/repository";
 
 export const runtime = "nodejs";
@@ -13,7 +14,7 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(): Promise<NextResponse> {
   try {
-    if (!process.env.ANTHROPIC_API_KEY?.trim()) {
+    if (!hasAiCredentials()) {
       return apiError(
         "AI_UNAVAILABLE",
         "サーバー側で AI の設定が完了していません。管理者にお問い合わせください。"
