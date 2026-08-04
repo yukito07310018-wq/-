@@ -11,7 +11,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:push": "prisma db push",
-    "db:generate": "prisma generate"
+    "db:generate": "prisma generate",
+"postinstall": "prisma generate"
+
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
