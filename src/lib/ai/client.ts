@@ -175,6 +175,7 @@ export interface StructuredCallOptions<T> extends RawCallOptions {
  */
 export async function callModelStructured<T>(options: StructuredCallOptions<T>): Promise<T> {
   let feedback = "";
+  let lastRaw = "";
 
   for (let attempt = 0; attempt <= MAX_REPAIR_ATTEMPTS; attempt++) {
     const raw = await callModel({
@@ -182,28 +183,37 @@ export async function callModelStructured<T>(options: StructuredCallOptions<T>):
       user: feedback ? `${options.user}\n\n${feedback}` : options.user,
     });
 
+    lastRaw = raw;
     let parsed: unknown;
     try {
       parsed = JSON.parse(extractJson(raw));
-    } catch {
+    } catch (error) {
       feedback = `前回の出力は JSON として解析できませんでした。マークダウンや説明文を含めず、JSON オブジェクトのみを出力してください。`;
-      console.warn(`[ai] ${options.label}: JSON parse failed (attempt ${attempt + 1})`);
+      console.warn(
+        `[ai] ${options.label}: JSON parse failed (attempt ${attempt + 1})\nRaw output: ${raw.slice(0, 200)}\nError: ${error}`
+      );
       if (attempt < MAX_REPAIR_ATTEMPTS) await sleep(1000 * 2 ** attempt);
       continue;
     }
 
     const result = options.schema.safeParse(parsed);
-    if (result.success) return result.data;
+    if (result.success) {
+      console.info(`[ai] ${options.label}: successfully parsed valid schema (attempt ${attempt + 1})`);
+      return result.data;
+    }
 
     const issues = result.error.issues
       .slice(0, 5)
       .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
       .join("; ");
     feedback = `前回の出力はスキーマ検証に失敗しました: ${issues}。スキーマに厳密に従った JSON のみを出力してください。`;
-    console.warn(`[ai] ${options.label}: schema validation failed (attempt ${attempt + 1}): ${issues}`);
+    console.warn(
+      `[ai] ${options.label}: schema validation failed (attempt ${attempt + 1}): ${issues}\nParsed data: ${JSON.stringify(parsed).slice(0, 200)}`
+    );
     if (attempt < MAX_REPAIR_ATTEMPTS) await sleep(1000 * 2 ** attempt);
   }
 
+  console.error(`[ai] ${options.label}: Final attempt failed. Last raw output: ${lastRaw.slice(0, 500)}`);
   throw new AiUnavailableError(`${options.label}: 有効な JSON を取得できませんでした。`);
 }
 

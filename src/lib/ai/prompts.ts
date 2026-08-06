@@ -58,7 +58,7 @@ CRITICAL INSTRUCTIONS FOR THIS TASK:
 
 Every extracted evidence item must quote the user's actual words verbatim.
 Do not fabricate, paraphrase, or reconstruct quotations.
-A quote must be a contiguous span copied from the user's answer, 10-120 characters long.
+A quote must be a contiguous span copied from the user's answer, 5-200 characters long.
 If genuinely ZERO meaningful evidence is present in the answer, return an empty array.
 But this is rare - most answers contain some meaningful indicators.
 Extract at most 8 evidence items covering at most 6 elements.
@@ -220,23 +220,42 @@ export function selectContextElements(ctx: ProfileContext): string[] {
   }
 
   console.info(
-    `[selectContextElements] selected=${selected.length} elements, ` +
-    `targetElements=${ctx.targetElements?.length ?? 0}, confidence=${[...byConfidence.slice(0, 30)].map((e) => e.confidence.toFixed(2)).join(",")}`
+    `[selectContextElements] selected=${selected.length} elements (target=${ctx.targetElements?.length ?? 0}, ` +
+    `confidence-based=${[...byConfidence.slice(0, 30)].length}, neighbors=${neighbours.length}, ` +
+    `contradictions=${inContradiction.length})`
   );
+
+  if (selected.length === 0) {
+    console.warn(`[selectContextElements] WARNING: no elements selected! States=${ctx.states.size}, ELEMENTS=${ELEMENTS.length}`);
+  }
+
+  console.info(`[selectContextElements] selected element IDs: ${selected.join(", ")}`);
 
   return selected;
 }
 
 /** Compact element list for prompts: id, name, short definition, what to look for. */
 export function renderElementCatalogue(elementIds: readonly string[]): string {
-  return elementIds
+  if (elementIds.length === 0) {
+    // If no elements provided, show all 100 elements - this shouldn't happen but is a safety net
+    console.warn("[renderElementCatalogue] empty element list, showing all 100 elements");
+    elementIds = ELEMENTS.map((e) => e.element_id);
+  }
+
+  const rendered = elementIds
     .map((id) => {
       const e = getElement(id);
-      if (!e) return "";
+      if (!e) {
+        console.warn(`[renderElementCatalogue] element not found: ${id}`);
+        return "";
+      }
       return `${e.element_id} [${axisNameOf(e.axis_id)}] ${e.name}: ${e.short_definition} / 観察点: ${e.measurement_target}`;
     })
     .filter(Boolean)
     .join("\n");
+
+  console.info(`[renderElementCatalogue] rendered ${rendered.split("\n").filter(Boolean).length} elements`);
+  return rendered;
 }
 
 export function renderRecentConversation(messages: readonly ConversationMessage[]): string {
@@ -287,6 +306,17 @@ export interface AnalystPromptInput {
 }
 
 export function buildAnalystUserPrompt(input: AnalystPromptInput): string {
+  console.info(
+    `[buildAnalystUserPrompt] question="${input.question.slice(0, 40)}...", ` +
+    `answer="${input.answer.slice(0, 40)}..." (${[...input.answer].length} chars), ` +
+    `elements=${input.elementIds.length}, recentEvidence=${input.recentEvidence.length}, ` +
+    `contradictions=${input.contradictions.length}`
+  );
+
+  if (input.answer.trim().length < 10) {
+    console.warn(`[buildAnalystUserPrompt] WARNING: very short answer (${[...input.answer].length} chars)`);
+  }
+
   return [
     "## 分析対象の主要な要素",
     renderElementCatalogue(input.elementIds),
@@ -307,6 +337,8 @@ export function buildAnalystUserPrompt(input: AnalystPromptInput): string {
     wrapUserAnswer(input.answer),
     "",
     "上記の回答から証拠を抽出してください。",
+    "重要: 短い回答でも、その中から有意義な個人特性に関する情報を抽出してください。",
+    "ユーザーが何かに言及した、その選択、表現の仕方、評価の方向性など、全てが証拠になります。",
     "上記に示した要素リストは分析の主対象ですが、ユーザーの答えから他の関連するキャラクタリスティクスについても自由に証拠を抽出できます。",
     "ユーザーの回答の内容とその含意から、どのような個人特性が表れているか、広い視点で分析してください。",
     "JSON のみを出力してください。",
