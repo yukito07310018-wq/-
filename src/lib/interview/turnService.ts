@@ -66,7 +66,8 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     };
   }
 
-  const lastQuestion = askedQuestions[askedQuestions.length - 1]?.text ?? "";
+  const lastQuestion = askedQuestions[askedQuestions.length - 1];
+  const lastQuestionText = lastQuestion?.text ?? "";
   const recentlyUpdated = [...states.values()]
     .filter((s) => s.last_updated_turn >= turn - 3 && s.evidence_count > 0)
     .map((s) => s.element_id);
@@ -75,12 +76,13 @@ export async function processTurn(sessionId: string, message: string): Promise<T
   let analyst;
   try {
     analyst = await runAnalystCall({
-      question: lastQuestion,
+      question: lastQuestionText,
       answer: message,
       elementIds: selectContextElements({
         states,
         contradictions: priorContradictions,
         recentlyUpdated,
+        targetElements: lastQuestion?.target_elements,
       }),
       conversation,
       recentEvidence: priorEvidence,

@@ -139,6 +139,7 @@ export interface ProfileContext {
   states: ReadonlyMap<string, ElementState>;
   contradictions: readonly Contradiction[];
   recentlyUpdated: readonly string[];
+  targetElements?: readonly string[];
 }
 
 /**
@@ -153,6 +154,9 @@ export function selectContextElements(ctx: ProfileContext): string[] {
       selected.push(id);
     }
   };
+
+  // Always include target elements from the current question
+  for (const id of ctx.targetElements ?? []) add(id);
 
   const byConfidence = [...ELEMENTS]
     .map((e) => ({ id: e.element_id, confidence: ctx.states.get(e.element_id)?.confidence ?? 0 }))
