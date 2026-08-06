@@ -77,7 +77,12 @@ async function extractOnce(input: AnalystPromptInput, emphasiseQuotes = false) {
     ? `${base}\n\n重要: 前回の抽出では、ユーザーの発話に存在しない引用が含まれていました。quote は必ず上記 <user_answer> 内の文字列をそのまま切り出してください。該当する引用が作れない証拠は出力しないでください。`
     : base;
 
-  return callModelStructured({
+  console.info(
+    `[analystCall.extractOnce] calling model with ${input.elementIds.length} elements, ` +
+    `answer="${input.answer.slice(0, 60)}...", emphasiseQuotes=${emphasiseQuotes}`
+  );
+
+  const result = await callModelStructured({
     label: "analyst",
     system: ANALYST_SYSTEM_PROMPT,
     user,
@@ -86,4 +91,11 @@ async function extractOnce(input: AnalystPromptInput, emphasiseQuotes = false) {
     prefill: '{"evidence":',
     schema: EvidenceExtractionSchema,
   });
+
+  console.info(
+    `[analystCall.extractOnce] model returned: ${result.evidence.length} evidence, ` +
+    `${result.contradiction_candidates.length} contradictions`
+  );
+
+  return result;
 }

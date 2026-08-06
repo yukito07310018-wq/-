@@ -34,15 +34,25 @@ export async function processTurn(sessionId: string, message: string): Promise<T
 
   const turn = session.turnCount + 1;
 
-  const [states, priorEvidence, priorContradictions, askedQuestions, conversation, confidenceHistory] =
-    await Promise.all([
-      repo.loadElementStates(sessionId),
-      repo.loadEvidence(sessionId),
-      repo.loadContradictions(sessionId),
-      repo.loadAskedQuestions(sessionId),
-      repo.loadConversation(sessionId),
-      repo.loadMeanConfidenceHistory(sessionId),
-    ]);
+  let states, priorEvidence, priorContradictions, askedQuestions, conversation, confidenceHistory;
+  try {
+    [states, priorEvidence, priorContradictions, askedQuestions, conversation, confidenceHistory] =
+      await Promise.all([
+        repo.loadElementStates(sessionId),
+        repo.loadEvidence(sessionId),
+        repo.loadContradictions(sessionId),
+        repo.loadAskedQuestions(sessionId),
+        repo.loadConversation(sessionId),
+        repo.loadMeanConfidenceHistory(sessionId),
+      ]);
+    console.info(
+      `[turnService] loaded session data: elements=${Object.keys(states).length}, ` +
+      `evidence=${priorEvidence.length}, questions=${askedQuestions.length}`
+    );
+  } catch (error) {
+    console.error("[turnService] failed to load session data:", error);
+    throw error;
+  }
 
   await repo.saveConversationTurn(sessionId, turn, "user", message);
 
@@ -123,6 +133,11 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     makeContradictionId: (i) => `cx-${turn}-${i}`,
   });
 
+  console.info(
+    `[turnService] persisting turn ${turn}: evidence=${update.newEvidence.length}, ` +
+    `changedStates=${update.changedStates.size}, contradictions=${update.newContradictions.length}`
+  );
+
   await repo.persistTurn({
     sessionId,
     turn,
@@ -132,6 +147,8 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     resolutions: update.resolutions,
     axes: update.axes,
   });
+
+  console.info(`[turnService] turn ${turn} successfully persisted to database`);
 
   const progress = computeProgress({
     turn,

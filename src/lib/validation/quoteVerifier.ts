@@ -9,9 +9,9 @@ import type { EvidenceDraft } from "../types/diagnosis";
  * utterance and dropped when it cannot be found there.
  */
 
-export const MIN_QUOTE_CHARS = 10;
-export const MAX_QUOTE_CHARS = 120;
-export const FUZZY_THRESHOLD = 0.85;
+export const MIN_QUOTE_CHARS = 5;
+export const MAX_QUOTE_CHARS = 200;
+export const FUZZY_THRESHOLD = 0.80;
 /** Rejecting this many items in one turn triggers a single Call A repair (§9.1-5). */
 export const REPAIR_TRIGGER_REJECTIONS = 3;
 
