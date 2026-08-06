@@ -23,8 +23,19 @@ export interface AnalystResult {
  * whatever survives the second pass is what gets used.
  */
 export async function runAnalystCall(input: AnalystPromptInput): Promise<AnalystResult> {
+  console.info(
+    `[analystCall] starting extraction: question="${input.question.slice(0, 50)}...", ` +
+    `answerLength=${input.answer.length}, elementCount=${input.elementIds.length}`
+  );
+
   const first = await extractOnce(input);
+  console.info(`[analystCall] first pass extracted ${first.evidence.length} evidence items`);
+
   const firstVerified = verifyEvidenceQuotes(first.evidence, input.answer);
+  console.info(
+    `[analystCall] first pass verification: accepted=${firstVerified.accepted.length}, ` +
+    `rejected=${firstVerified.rejected.length}, shouldRepair=${firstVerified.shouldRepair}`
+  );
 
   if (!firstVerified.shouldRepair) {
     return {
@@ -40,7 +51,13 @@ export async function runAnalystCall(input: AnalystPromptInput): Promise<Analyst
   );
 
   const second = await extractOnce(input, true);
+  console.info(`[analystCall] second pass extracted ${second.evidence.length} evidence items`);
+
   const secondVerified = verifyEvidenceQuotes(second.evidence, input.answer);
+  console.info(
+    `[analystCall] second pass verification: accepted=${secondVerified.accepted.length}, ` +
+    `rejected=${secondVerified.rejected.length}`
+  );
 
   // Keep whichever pass produced more grounded evidence.
   const useSecond = secondVerified.accepted.length >= firstVerified.accepted.length;

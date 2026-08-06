@@ -78,17 +78,28 @@ export function verifyEvidenceQuotes(
   const accepted: EvidenceDraft[] = [];
   const rejected: QuoteVerificationResult["rejected"] = [];
 
+  console.info(
+    `[quoteVerifier] verifying ${drafts.length} evidence items against utterance (${[...utterance].length} chars)`
+  );
+
   for (const draft of drafts) {
     const check = verifyQuote(draft.quote, utterance);
     if (check.ok) {
       accepted.push(draft);
+      console.info(
+        `[quoteVerifier] accepted: ${draft.element_id} | "${draft.quote.slice(0, 40)}..." (sim=${check.similarity.toFixed(2)})`
+      );
     } else {
       rejected.push({ evidence: draft, reason: check.reason!, similarity: check.similarity });
       console.warn(
-        `[quoteVerifier] dropped evidence for ${draft.element_id} (${check.reason}, sim=${check.similarity.toFixed(2)}): ${draft.quote.slice(0, 40)}`
+        `[quoteVerifier] dropped ${draft.element_id} (${check.reason}, sim=${check.similarity.toFixed(2)}): "${draft.quote.slice(0, 40)}..."`
       );
     }
   }
+
+  console.info(
+    `[quoteVerifier] result: accepted=${accepted.length}, rejected=${rejected.length}, shouldRepair=${rejected.length >= REPAIR_TRIGGER_REJECTIONS}`
+  );
 
   return {
     accepted,

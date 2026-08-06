@@ -35,17 +35,27 @@ CONFIDENCE represents how strongly the available evidence supports that estimate
 You do NOT output scores or confidence values. You output evidence only.
 The application computes all numeric state deterministically.
 
+CRITICAL: Extract evidence even from indirect or subtle indicators.
+You MUST examine the user's answer carefully for any relevant information
+that relates to the provided elements, even if the connection is subtle.
+Examples of valid evidence:
+- What the user chose to mention and what they omitted
+- How they describe their experience (tone, framing, emphasis)
+- Trade-offs they make in their decisions
+- What they value based on their actions
+- Their response patterns to questions
+
 Every extracted evidence item must quote the user's actual words verbatim.
 Do not fabricate, paraphrase, or reconstruct quotations.
 A quote must be a contiguous span copied from the user's answer, 10-120 characters long.
-If no meaningful evidence is present in the answer, return an empty array.
-Returning fewer, well-grounded items is strictly better than many weak ones.
+If genuinely no meaningful evidence is present, return an empty array.
+But err on the side of extracting evidence: returning few items is better than none.
 Extract at most 8 evidence items covering at most 6 elements.
 
 For each item:
 - strength (0-1): how strongly the quote indicates the characteristic.
 - reliability (0-1): how certain your interpretation is. Lower it for indirect,
-  ambiguous, or socially-desirable statements.
+  ambiguous, or socially-desirable statements. Even 0.5 reliability is acceptable.
 - direction: "positive" if the quote indicates the characteristic is present,
   "negative" if it indicates its absence, "neutral" if it is informative but
   non-directional.
@@ -145,7 +155,7 @@ export interface ProfileContext {
 /**
  * §37 — picks at most 35 elements worth sending: the least certain, whatever
  * was just touched (plus its neighbourhood), and anything caught in an
- * unresolved contradiction.
+ * unresolved contradiction, and target elements from the current question.
  */
 export function selectContextElements(ctx: ProfileContext): string[] {
   const selected: string[] = [];
@@ -155,14 +165,18 @@ export function selectContextElements(ctx: ProfileContext): string[] {
     }
   };
 
-  // Always include target elements from the current question
-  for (const id of ctx.targetElements ?? []) add(id);
+  // Priority 1: Always include target elements from the current question first
+  if (ctx.targetElements && ctx.targetElements.length > 0) {
+    for (const id of ctx.targetElements) add(id);
+  }
 
+  // Priority 2: Include elements with lowest confidence (need more evidence)
   const byConfidence = [...ELEMENTS]
     .map((e) => ({ id: e.element_id, confidence: ctx.states.get(e.element_id)?.confidence ?? 0 }))
     .sort((a, b) => a.confidence - b.confidence || a.id.localeCompare(b.id));
-  for (const { id } of byConfidence.slice(0, 20)) add(id);
+  for (const { id } of byConfidence.slice(0, 25)) add(id);
 
+  // Priority 3: Include neighbors of recently updated elements
   const neighbours: string[] = [];
   for (const id of ctx.recentlyUpdated) {
     neighbours.push(id);
@@ -170,11 +184,17 @@ export function selectContextElements(ctx: ProfileContext): string[] {
   }
   for (const id of neighbours.slice(0, 10)) add(id);
 
+  // Priority 4: Include elements in unresolved contradictions
   const inContradiction = ctx.contradictions
     .filter((c) => c.status === "unresolved")
     .flatMap((c) => c.elements)
     .slice(0, 5);
   for (const id of inContradiction) add(id);
+
+  // If still not enough elements, add more by confidence to ensure analyst has good context
+  if (selected.length < 25) {
+    for (const { id } of byConfidence.slice(25, 35)) add(id);
+  }
 
   return selected;
 }

@@ -75,19 +75,36 @@ export async function processTurn(sessionId: string, message: string): Promise<T
   // --- Call A: evidence extraction (§22-3) ----------------------------------
   let analyst;
   try {
+    const elementIds = selectContextElements({
+      states,
+      contradictions: priorContradictions,
+      recentlyUpdated,
+      targetElements: lastQuestion?.target_elements,
+    });
+
+    console.info(
+      `[turnService] analyst context: turn=${turn}, selectedElements=${elementIds.length}, ` +
+      `targetElements=${lastQuestion?.target_elements?.length ?? 0}, ` +
+      `hasQuestion=${!!lastQuestionText}`
+    );
+    if (elementIds.length > 0) {
+      console.info(`[turnService] selected element IDs: ${elementIds.slice(0, 10).join(", ")}${elementIds.length > 10 ? "..." : ""}`);
+    }
+
     analyst = await runAnalystCall({
       question: lastQuestionText,
       answer: message,
-      elementIds: selectContextElements({
-        states,
-        contradictions: priorContradictions,
-        recentlyUpdated,
-        targetElements: lastQuestion?.target_elements,
-      }),
+      elementIds,
       conversation,
       recentEvidence: priorEvidence,
       contradictions: priorContradictions,
     });
+
+    console.info(
+      `[turnService] analyst returned: evidence=${analyst.evidence.length}, ` +
+      `contradictions=${analyst.contradictionCandidates.length}, ` +
+      `rejected=${analyst.rejectedCount}, repaired=${analyst.repaired}`
+    );
   } catch (error) {
     // §36 failure handling: a failed extraction must not stop the conversation.
     console.error("[turnService] analyst call failed, continuing with zero evidence:", error);

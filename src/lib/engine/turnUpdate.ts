@@ -92,6 +92,14 @@ export function applyTurn(input: TurnUpdateInput): TurnUpdateResult {
   const limited = applyTurnLimits(input.drafts);
   const droppedByLimits = input.drafts.length - limited.length;
 
+  console.info(
+    `[turnUpdate] evidence processing: received=${input.drafts.length}, ` +
+    `afterLimits=${limited.length}, dropped=${droppedByLimits}`
+  );
+  if (input.drafts.length > 0 && limited.length === 0) {
+    console.warn(`[turnUpdate] WARNING: all ${input.drafts.length} evidence items were dropped by limits!`);
+  }
+
   const newEvidence: Evidence[] = limited.map((d, index) => ({
     ...d,
     evidence_id: input.makeEvidenceId(index),
