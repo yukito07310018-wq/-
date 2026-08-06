@@ -24,12 +24,23 @@ export interface AnalystResult {
  */
 export async function runAnalystCall(input: AnalystPromptInput): Promise<AnalystResult> {
   console.info(
-    `[analystCall] starting extraction: question="${input.question.slice(0, 50)}...", ` +
-    `answerLength=${input.answer.length}, elementCount=${input.elementIds.length}`
+    `[analystCall] ===== STARTING EXTRACTION =====\n` +
+    `  question="${input.question.slice(0, 60)}\n` +
+    `  answer length=${[...input.answer].length} chars, content="${input.answer.slice(0, 60)}..."\n` +
+    `  elements selected=${input.elementIds.length}, conversation=${input.conversation.length} msgs, ` +
+    `recent evidence=${input.recentEvidence.length}, contradictions=${input.contradictions.length}`
   );
 
   const first = await extractOnce(input);
-  console.info(`[analystCall] first pass extracted ${first.evidence.length} evidence items`);
+  console.info(
+    `[analystCall] first pass raw result: evidence=${first.evidence.length} items, ` +
+    `contradictions=${first.contradiction_candidates.length}`
+  );
+  if (first.evidence.length === 0) {
+    console.warn(`[analystCall] ⚠️  WARNING: first pass returned ZERO evidence items!`);
+  } else {
+    console.info(`[analystCall] first pass evidence items: ${first.evidence.map(e => `${e.element_id}(strength=${e.strength.toFixed(2)})`).join(", ")}`);
+  }
 
   const firstVerified = verifyEvidenceQuotes(first.evidence, input.answer);
   console.info(
@@ -38,6 +49,10 @@ export async function runAnalystCall(input: AnalystPromptInput): Promise<Analyst
   );
 
   if (!firstVerified.shouldRepair) {
+    console.info(
+      `[analystCall] ===== FINAL RESULT (no repair needed) =====\n` +
+      `  accepted=${firstVerified.accepted.length}, rejected=${firstVerified.rejected.length}`
+    );
     return {
       evidence: firstVerified.accepted,
       contradictionCandidates: first.contradiction_candidates,
@@ -47,11 +62,14 @@ export async function runAnalystCall(input: AnalystPromptInput): Promise<Analyst
   }
 
   console.warn(
-    `[analystCall] ${firstVerified.rejected.length} ungrounded quotes — re-running extraction once`
+    `[analystCall] REPAIR TRIGGERED: ${firstVerified.rejected.length} ungrounded quotes — re-running extraction once`
   );
 
   const second = await extractOnce(input, true);
-  console.info(`[analystCall] second pass extracted ${second.evidence.length} evidence items`);
+  console.info(`[analystCall] second pass raw result: evidence=${second.evidence.length} items, contradictions=${second.contradiction_candidates.length}`);
+  if (second.evidence.length === 0) {
+    console.warn(`[analystCall] ⚠️  WARNING: second pass also returned ZERO evidence items!`);
+  }
 
   const secondVerified = verifyEvidenceQuotes(second.evidence, input.answer);
   console.info(
@@ -61,6 +79,12 @@ export async function runAnalystCall(input: AnalystPromptInput): Promise<Analyst
 
   // Keep whichever pass produced more grounded evidence.
   const useSecond = secondVerified.accepted.length >= firstVerified.accepted.length;
+  console.info(
+    `[analystCall] ===== FINAL RESULT (repaired) =====\n` +
+    `  using ${useSecond ? "second" : "first"} pass: accepted=${useSecond ? secondVerified.accepted.length : firstVerified.accepted.length}\n` +
+    `  total rejected=${firstVerified.rejected.length + secondVerified.rejected.length}`
+  );
+
   return {
     evidence: useSecond ? secondVerified.accepted : firstVerified.accepted,
     contradictionCandidates: useSecond
@@ -78,8 +102,11 @@ async function extractOnce(input: AnalystPromptInput, emphasiseQuotes = false) {
     : base;
 
   console.info(
-    `[analystCall.extractOnce] calling model with ${input.elementIds.length} elements, ` +
-    `answer="${input.answer.slice(0, 60)}...", emphasiseQuotes=${emphasiseQuotes}`
+    `[analystCall.extractOnce] calling model (emphasiseQuotes=${emphasiseQuotes})\n` +
+    `  user prompt length=${user.length} chars\n` +
+    `  element IDs in prompt: ${input.elementIds.length}\n` +
+    `  system prompt length=${ANALYST_SYSTEM_PROMPT.length} chars\n` +
+    `  max tokens=${ANALYST_MAX_TOKENS}, temperature=${ANALYST_TEMPERATURE}`
   );
 
   const result = await callModelStructured({
@@ -93,9 +120,15 @@ async function extractOnce(input: AnalystPromptInput, emphasiseQuotes = false) {
   });
 
   console.info(
-    `[analystCall.extractOnce] model returned: ${result.evidence.length} evidence, ` +
-    `${result.contradiction_candidates.length} contradictions`
+    `[analystCall.extractOnce] model returned: ${result.evidence.length} evidence items, ` +
+    `${result.contradiction_candidates.length} contradiction candidates`
   );
+
+  if (result.evidence.length > 0) {
+    console.info(
+      `[analystCall.extractOnce] evidence details:\n${result.evidence.map((e, i) => `  [${i}] ${e.element_id} | type=${e.type} | strength=${e.strength.toFixed(2)} | reliability=${e.reliability.toFixed(2)} | direction=${e.direction} | quote="${e.quote.slice(0, 40)}..."`).join("\n")}`
+    );
+  }
 
   return result;
 }

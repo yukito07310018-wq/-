@@ -306,15 +306,18 @@ export interface AnalystPromptInput {
 }
 
 export function buildAnalystUserPrompt(input: AnalystPromptInput): string {
+  const answerChars = [...input.answer].length;
   console.info(
-    `[buildAnalystUserPrompt] question="${input.question.slice(0, 40)}...", ` +
-    `answer="${input.answer.slice(0, 40)}..." (${[...input.answer].length} chars), ` +
-    `elements=${input.elementIds.length}, recentEvidence=${input.recentEvidence.length}, ` +
-    `contradictions=${input.contradictions.length}`
+    `[buildAnalystUserPrompt] constructing analyst prompt:\n` +
+    `  question="${input.question.slice(0, 60)}...\n` +
+    `  answer=${answerChars} chars: "${input.answer.slice(0, 80)}...\n` +
+    `  elements=${input.elementIds.length}, recentEvidence=${input.recentEvidence.length}, ` +
+    `contradictions=${input.contradictions.length}\n` +
+    `  element IDs being provided: ${input.elementIds.slice(0, 10).join(", ")}${input.elementIds.length > 10 ? "..." : ""}`
   );
 
-  if (input.answer.trim().length < 10) {
-    console.warn(`[buildAnalystUserPrompt] WARNING: very short answer (${[...input.answer].length} chars)`);
+  if (answerChars < 10) {
+    console.warn(`[buildAnalystUserPrompt] ⚠️  WARNING: very short answer (${answerChars} chars only!)`);
   }
 
   return [

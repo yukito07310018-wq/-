@@ -122,6 +122,12 @@ export async function processTurn(sessionId: string, message: string): Promise<T
   }
 
   // --- deterministic model update (§22-4〜9) --------------------------------
+  console.info(
+    `[turnService] applying turn update with:\n` +
+    `  analyst evidence=${analyst.evidence.length} items\n` +
+    `  contradiction candidates=${analyst.contradictionCandidates.length}`
+  );
+
   const update = applyTurn({
     turn,
     states,
@@ -134,8 +140,21 @@ export async function processTurn(sessionId: string, message: string): Promise<T
   });
 
   console.info(
-    `[turnService] persisting turn ${turn}: evidence=${update.newEvidence.length}, ` +
-    `changedStates=${update.changedStates.size}, contradictions=${update.newContradictions.length}`
+    `[turnService] after applyTurn:\n` +
+    `  new evidence=${update.newEvidence.length}\n` +
+    `  changed states=${update.changedStates.size}\n` +
+    `  new contradictions=${update.newContradictions.length}\n` +
+    `  mean confidence=${update.meanConfidence.toFixed(2)}\n` +
+    `  coverage=${update.coverage.toFixed(2)}`
+  );
+
+  if (update.newEvidence.length === 0) {
+    console.warn(`[turnService] ⚠️  WARNING: applyTurn produced ZERO new evidence!`);
+  }
+
+  console.info(
+    `[turnService] persisting turn ${turn} to database: evidence=${update.newEvidence.length}, ` +
+    `states=${update.changedStates.size}, contradictions=${update.newContradictions.length}`
   );
 
   await repo.persistTurn({
@@ -148,7 +167,7 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     axes: update.axes,
   });
 
-  console.info(`[turnService] turn ${turn} successfully persisted to database`);
+  console.info(`[turnService] ✓ turn ${turn} successfully persisted to database`);
 
   const progress = computeProgress({
     turn,

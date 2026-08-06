@@ -184,13 +184,21 @@ export async function callModelStructured<T>(options: StructuredCallOptions<T>):
     });
 
     lastRaw = raw;
+    console.info(`[ai] ${options.label} (attempt ${attempt + 1}): raw AI response length=${raw.length} chars, first 300 chars: ${raw.slice(0, 300)}`);
+
     let parsed: unknown;
     try {
-      parsed = JSON.parse(extractJson(raw));
+      const extracted = extractJson(raw);
+      console.info(`[ai] ${options.label}: extracted JSON length=${extracted.length} chars`);
+      parsed = JSON.parse(extracted);
+      console.info(`[ai] ${options.label}: successfully parsed JSON`);
     } catch (error) {
       feedback = `前回の出力は JSON として解析できませんでした。マークダウンや説明文を含めず、JSON オブジェクトのみを出力してください。`;
       console.warn(
-        `[ai] ${options.label}: JSON parse failed (attempt ${attempt + 1})\nRaw output: ${raw.slice(0, 200)}\nError: ${error}`
+        `[ai] ${options.label}: JSON parse failed (attempt ${attempt + 1})\n` +
+        `Raw output length: ${raw.length}\n` +
+        `Raw output (first 300 chars): ${raw.slice(0, 300)}\n` +
+        `Error: ${error}`
       );
       if (attempt < MAX_REPAIR_ATTEMPTS) await sleep(1000 * 2 ** attempt);
       continue;
@@ -198,7 +206,16 @@ export async function callModelStructured<T>(options: StructuredCallOptions<T>):
 
     const result = options.schema.safeParse(parsed);
     if (result.success) {
-      console.info(`[ai] ${options.label}: successfully parsed valid schema (attempt ${attempt + 1})`);
+      console.info(`[ai] ${options.label}: successfully validated schema (attempt ${attempt + 1})`);
+      if (options.label === "analyst") {
+        // Log evidence count for analyst calls
+        const parsedObj = parsed as Record<string, unknown> | unknown;
+        if (typeof parsedObj === "object" && parsedObj !== null && "evidence" in parsedObj) {
+          const evidence = (parsedObj as Record<string, unknown>).evidence;
+          const evCount = Array.isArray(evidence) ? evidence.length : 0;
+          console.info(`[ai] ${options.label}: returning ${evCount} evidence items`);
+        }
+      }
       return result.data;
     }
 
@@ -208,12 +225,18 @@ export async function callModelStructured<T>(options: StructuredCallOptions<T>):
       .join("; ");
     feedback = `前回の出力はスキーマ検証に失敗しました: ${issues}。スキーマに厳密に従った JSON のみを出力してください。`;
     console.warn(
-      `[ai] ${options.label}: schema validation failed (attempt ${attempt + 1}): ${issues}\nParsed data: ${JSON.stringify(parsed).slice(0, 200)}`
+      `[ai] ${options.label}: schema validation failed (attempt ${attempt + 1}): ${issues}\n` +
+      `Parsed data (first 300 chars): ${JSON.stringify(parsed).slice(0, 300)}\n` +
+      `Full parsed data keys: ${Object.keys(parsed as object).join(", ")}`
     );
     if (attempt < MAX_REPAIR_ATTEMPTS) await sleep(1000 * 2 ** attempt);
   }
 
-  console.error(`[ai] ${options.label}: Final attempt failed. Last raw output: ${lastRaw.slice(0, 500)}`);
+  console.error(
+    `[ai] ${options.label}: Final attempt failed after ${MAX_REPAIR_ATTEMPTS + 1} attempts.\n` +
+    `Last raw output length: ${lastRaw.length}\n` +
+    `Last raw output (first 500 chars): ${lastRaw.slice(0, 500)}`
+  );
   throw new AiUnavailableError(`${options.label}: 有効な JSON を取得できませんでした。`);
 }
 
