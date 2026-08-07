@@ -91,9 +91,9 @@ AIとの対話から、**100要素・10軸の個人モデル**を継続的に構
 ## 3. セットアップ
 
 ```bash
-npm install
-cp .env.example .env        # ANTHROPIC_API_KEY を設定
-npx prisma migrate deploy   # SQLite を作成
+npm install                 # postinstall で prisma generate が走る
+cp .env.example .env        # ANTHROPIC_API_KEY と DATABASE_URL を設定
+npm run db:push             # スキーマをDBへ反映
 npm run dev                 # http://localhost:3000
 ```
 
@@ -104,7 +104,21 @@ npm run dev                 # http://localhost:3000
 | `ANTHROPIC_API_KEY` | ✅ | — | 未設定なら `/api/interview/start` が日本語のエラーを返します |
 | `ANTHROPIC_MODEL` | | `claude-sonnet-4-5` | 既定値は `src/lib/ai/client.ts` の `DEFAULT_MODEL` |
 | `ANTHROPIC_BASE_URL` | | Anthropic本番 | プロキシ／ローカルモック用 |
-| `DATABASE_URL` | ✅ | `file:./dev.db` | SQLiteの場所 |
+| `DATABASE_URL` | ✅ | — | PostgreSQL接続文字列。`prisma generate` には不要で、実際に接続するコマンドと実行時にのみ必要 |
+
+### Vercelへのデプロイ
+
+1. VercelプロジェクトのEnvironment Variablesに `DATABASE_URL` と `ANTHROPIC_API_KEY` を設定する
+2. 初回のみ、スキーマをDBへ反映する（ビルドはこれを行いません）
+
+```bash
+DATABASE_URL="postgresql://..." npm run db:push
+```
+
+3. あとは通常どおりpushすればデプロイされる
+
+`npm run build` は `next build` のみです。ビルドがスキーマ変更を本番DBへ適用することは
+ないため、スキーマを変更したときは上記2をもう一度実行してください。
 
 `verifyModelAccess()`（`src/lib/ai/client.ts`）でモデルへの疎通確認ができます。失敗時は
 モデル名と環境変数名を含む日本語メッセージを投げます。
@@ -136,7 +150,7 @@ node scripts/smokeInterview.mjs      # start → 全ターン → profile を一
 
 ---
 
-## 4. DB構造（Prisma + SQLite）
+## 4. DB構造（Prisma + PostgreSQL）
 
 | モデル | 役割 |
 |---|---|
