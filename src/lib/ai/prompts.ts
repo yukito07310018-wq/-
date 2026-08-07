@@ -37,7 +37,8 @@ The application computes all numeric state deterministically.
 
 Every extracted evidence item must quote the user's actual words verbatim.
 Do not fabricate, paraphrase, or reconstruct quotations.
-A quote must be a contiguous span copied from the user's answer, 10-120 characters long.
+A quote must be a contiguous span copied from the user's answer, 6-120 characters long.
+Copy it exactly: spans shorter than 10 characters are accepted only on an exact match.
 If no meaningful evidence is present in the answer, return an empty array.
 Returning fewer, well-grounded items is strictly better than many weak ones.
 Extract at most 8 evidence items covering at most 6 elements.

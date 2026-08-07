@@ -7,10 +7,26 @@
  *
  * It answers each of the app's four calls by looking at the system prompt, and
  * grounds analyst quotes in the actual user answer so quote verification passes.
+ *
+ * MOCK_MODE (or POST /__mock/mode) reproduces the two ways the loop goes quiet
+ * without erroring, which are otherwise only observable in production:
+ *
+ *   grounded   … healthy (default)
+ *   ungrounded … Call A answers, but every quote is fabricated → all dropped
+ *   outage     … Call A fails outright → the turn continues with zero evidence
  */
 import { createServer } from "node:http";
 
 const PORT = Number(process.env.MOCK_PORT ?? 8787);
+const MODES = new Set(["grounded", "ungrounded", "outage"]);
+let mode = MODES.has(process.env.MOCK_MODE ?? "") ? process.env.MOCK_MODE : "grounded";
+
+/** Quotes that are deliberately absent from the user's answer. */
+const FABRICATED_QUOTES = [
+  "私は常に自分の信念を貫く強い人間だと自負しています",
+  "どんな状況でも冷静さを失わないのが自分の長所です",
+  "他人の評価はまったく気にしないと決めています",
+];
 
 /** Pulls the user's answer back out of the <user_answer> envelope. */
 function extractAnswer(text) {
@@ -49,7 +65,7 @@ let analystTurn = 0;
 
 function analystResponse(userPrompt) {
   const answer = extractAnswer(userPrompt);
-  const quotes = realQuotes(answer, 3);
+  const quotes = mode === "ungrounded" ? FABRICATED_QUOTES : realQuotes(answer, 3);
   analystTurn += 1;
 
   const evidence = quotes.map((quote, i) => ({
@@ -82,6 +98,27 @@ function interviewerResponse() {
 }
 
 const server = createServer((req, res) => {
+  // Flip failure modes without restarting, so one run can cover every branch.
+  if (req.url === "/__mock/mode") {
+    if (req.method !== "POST") {
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ mode }));
+      return;
+    }
+    let next = "";
+    req.on("data", (chunk) => (next += chunk));
+    req.on("end", () => {
+      next = next.trim();
+      if (!MODES.has(next)) {
+        res.writeHead(400).end(`unknown mode: ${next}`);
+        return;
+      }
+      mode = next;
+      console.log(`[mockAnthropic] mode -> ${mode}`);
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ mode }));
+    });
+    return;
+  }
+
   if (!req.url?.endsWith("/v1/messages") || req.method !== "POST") {
     res.writeHead(404).end("not found");
     return;
@@ -112,6 +149,13 @@ const server = createServer((req, res) => {
           : "none";
       text = JSON.stringify({ level, reason: "mock" });
     } else if (system.includes("personal-modeling analyst")) {
+      if (mode === "outage") {
+        console.log("[mockAnthropic] analyst -> 500 (outage mode)");
+        res.writeHead(500, { "Content-Type": "application/json" }).end(
+          JSON.stringify({ type: "error", error: { type: "api_error", message: "mock outage" } })
+        );
+        return;
+      }
       text = analystResponse(userPrompt);
     } else if (system.includes("adaptive interviewer")) {
       text = interviewerResponse();

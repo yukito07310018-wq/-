@@ -9,17 +9,32 @@ import type { EvidenceDraft } from "../types/diagnosis";
  * utterance and dropped when it cannot be found there.
  */
 
-export const MIN_QUOTE_CHARS = 10;
+/**
+ * Absolute floor. Japanese carries far more meaning per character than the
+ * 10-char minimum assumed, and useful spans like 「説明書を読まない」(8) were
+ * being discarded as too short.
+ */
+export const MIN_QUOTE_CHARS = 6;
+/**
+ * Below this length the fuzzy fallback is not trustworthy: with only a handful
+ * of trigrams, unrelated strings reach high Jaccard scores by chance. Short
+ * quotes are therefore accepted only on an exact (normalised) substring match.
+ */
+export const FUZZY_MIN_QUOTE_CHARS = 10;
 export const MAX_QUOTE_CHARS = 120;
 export const FUZZY_THRESHOLD = 0.85;
-/** Rejecting this many items in one turn triggers a single Call A repair (§9.1-5). */
+/** Rejecting this many items in one turn can trigger a Call A repair (§9.1-5). */
 export const REPAIR_TRIGGER_REJECTIONS = 3;
 
 export type QuoteRejectionReason = "too_short" | "too_long" | "not_grounded";
 
+export type QuoteRejectionCounts = Record<QuoteRejectionReason, number>;
+
 export interface QuoteVerificationResult {
   accepted: EvidenceDraft[];
   rejected: { evidence: EvidenceDraft; reason: QuoteRejectionReason; similarity: number }[];
+  /** Rejections per reason — persisted per turn so drops stop being invisible. */
+  rejectionCounts: QuoteRejectionCounts;
   /** True when the caller should retry Call A once (§9.1-5). */
   shouldRepair: boolean;
 }
@@ -28,6 +43,10 @@ export interface QuoteCheck {
   ok: boolean;
   reason?: QuoteRejectionReason;
   similarity: number;
+}
+
+export function emptyRejectionCounts(): QuoteRejectionCounts {
+  return { too_short: 0, too_long: 0, not_grounded: 0 };
 }
 
 /** Verifies a single quote against the utterance it claims to come from. */
@@ -41,9 +60,13 @@ export function verifyQuote(quote: string, utterance: string): QuoteCheck {
   if (nq.length === 0) return { ok: false, reason: "too_short", similarity: 0 };
   if (nu.includes(nq)) return { ok: true, similarity: 1 };
 
-  // Substring match failed — allow near-misses caused by orthographic variation,
-  // comparing against the best-matching window of the utterance rather than the
-  // whole thing (a short true quote inside a long answer has low global overlap).
+  // Exact match failed. Short spans stop here: the fuzzy comparison below has
+  // too few trigrams to separate a real quote from a coincidence.
+  if (quoteLength < FUZZY_MIN_QUOTE_CHARS) return { ok: false, reason: "not_grounded", similarity: 0 };
+
+  // Allow near-misses caused by orthographic variation, comparing against the
+  // best-matching window of the utterance rather than the whole thing (a short
+  // true quote inside a long answer has low global overlap).
   const similarity = bestWindowSimilarity(nq, nu);
   if (similarity >= FUZZY_THRESHOLD) return { ok: true, similarity };
   return { ok: false, reason: "not_grounded", similarity };
@@ -77,6 +100,7 @@ export function verifyEvidenceQuotes(
 ): QuoteVerificationResult {
   const accepted: EvidenceDraft[] = [];
   const rejected: QuoteVerificationResult["rejected"] = [];
+  const rejectionCounts = emptyRejectionCounts();
 
   for (const draft of drafts) {
     const check = verifyQuote(draft.quote, utterance);
@@ -84,6 +108,7 @@ export function verifyEvidenceQuotes(
       accepted.push(draft);
     } else {
       rejected.push({ evidence: draft, reason: check.reason!, similarity: check.similarity });
+      rejectionCounts[check.reason!] += 1;
       console.warn(
         `[quoteVerifier] dropped evidence for ${draft.element_id} (${check.reason}, sim=${check.similarity.toFixed(2)}): ${draft.quote.slice(0, 40)}`
       );
@@ -93,6 +118,22 @@ export function verifyEvidenceQuotes(
   return {
     accepted,
     rejected,
-    shouldRepair: rejected.length >= REPAIR_TRIGGER_REJECTIONS,
+    rejectionCounts,
+    shouldRepair: shouldRepairBatch(accepted.length, rejected.length),
   };
+}
+
+/**
+ * Whether a second Call A is worth its cost.
+ *
+ * The previous rule ("3+ rejections") re-ran extraction even when the turn had
+ * already produced plenty of grounded evidence, doubling tokens and latency for
+ * no gain. A repair now happens only when the turn is actually failing: nothing
+ * survived, or the batch was mostly ungrounded.
+ */
+export function shouldRepairBatch(acceptedCount: number, rejectedCount: number): boolean {
+  if (rejectedCount === 0) return false;
+  // Nothing usable — one retry is the only chance this turn contributes anything.
+  if (acceptedCount === 0) return true;
+  return rejectedCount >= REPAIR_TRIGGER_REJECTIONS && rejectedCount > acceptedCount;
 }

@@ -75,10 +75,12 @@ AIとの対話から、**100要素・10軸の個人モデル**を継続的に構
 │                              ├ contradictionEngine 矛盾検出／解消          │
 │                              └ aggregation        10軸集約                │
 │   6.   db/repository.persistTurn            1トランザクションで永続化      │
-│   7.   engine/terminationEngine             終了判定                       │
-│   8. ★ ai/interviewerCall     (LLM, 温度0.7) 質問候補3〜5件               │
-│   9.   engine/questionSelector              QValue計算 → 1件を選択        │
-│  10. ★ ai/interviewerCall#reply (LLM, 温度0.7) 返答の自然文               │
+│        └ TurnDiagnostic                     抽出の成否と内訳も同時に記録   │
+│   7.   engine/extractionHealth              抽出が壊れていないかの判定     │
+│   8.   engine/terminationEngine             終了判定                       │
+│   9. ★ ai/interviewerCall     (LLM, 温度0.7) 質問候補3〜5件               │
+│  10.   engine/questionSelector              QValue計算 → 1件を選択        │
+│  11. ★ ai/interviewerCall#reply (LLM, 温度0.7) 返答の自然文               │
 └───────────────────────────────────────────────────────────────────────────┘
    ★ = LLM呼び出し（4種類）。それ以外はすべてLLM非依存の純粋関数。
 ```
@@ -157,6 +159,21 @@ node scripts/smokeInterview.mjs      # start → 全ターン → profile を一
 
 回答に `MOCK_CRISIS` / `MOCK_DISTRESS` を含めると §9.2 の分岐を再現できます。
 
+`MOCK_MODE`（または実行中に `POST /__mock/mode`）で、本番で起きうる無言の劣化を再現できます。
+
+| モード | 再現する状態 | 期待される表示 |
+|---|---|---|
+| `grounded` | 正常（既定） | 根拠が積み上がる |
+| `ungrounded` | Call Aは応答するが引用がすべて捏造 | 「引用の照合に失敗」 |
+| `outage` | Call Aが500を返し続ける | 「システムエラー」 |
+
+```bash
+curl -X POST --data outage http://127.0.0.1:8787/__mock/mode
+```
+
+`outage` と `ungrounded` はどちらも**根拠0件・カバー率0%**という同じ結果になります。
+これらを見分けるのが §8.1 の役割です。
+
 ---
 
 ## 4. DB構造（Prisma + PostgreSQL）
@@ -172,6 +189,7 @@ node scripts/smokeInterview.mjs      # start → 全ターン → profile を一
 | `Contradiction` | 矛盾ペア。severity・status・resolutionNote |
 | `QuestionHistory` | 出題履歴（類似質問の抑止に使用） |
 | `AxisSnapshot` | ターンごとの10軸スナップショット（飽和判定にも使用） |
+| `TurnDiagnostic` | ターンごとの抽出内訳。Call Aの成否・抽出/採用/却下件数・却下理由・再実行の有無・質問の出所 |
 
 配列はすべて**JSON文字列**で保持します（配列型を持たないSQLite時代の名残で、
 PostgreSQL移行後もスキーマ互換のため維持）。この変換は
@@ -333,10 +351,46 @@ Evidenceは必ずユーザーの発話からの逐語引用を伴います。
 1. 引用と発話を正規化（NFKC・全半角統一・小文字化・空白と記号除去）
 2. 正規化後の引用が発話の**部分文字列**かを検査
 3. 部分文字列でなければ、発話の同長ウィンドウとの trigram Jaccard が **0.85以上**なら許容
-4. 引用が10字未満または120字超なら破棄
-5. 同一ターンで3件以上破棄されたらCall Aを**1度だけ**再実行し、根拠が多く残った方を採用
+4. 引用が**6字未満**または120字超なら破棄
+5. 引用が10字未満の場合、3のあいまい照合は使わず**完全一致のみ**許容
+6. そのターンの抽出が失敗しているときだけCall Aを**1度だけ**再実行し、根拠が多く残った方を採用
 
-破棄は `console.warn` に記録されます。
+下限が6字なのは、日本語は1文字あたりの情報量が大きく、10字だと
+「説明書を読まない」のような正当な引用まで破棄されるためです。ただし短い引用は
+trigram数が少なくあいまい照合が信用できないので、完全一致を要求します（手順5）。
+
+再実行の条件（手順6）は `shouldRepairBatch()` にあり、**採用0件**か
+**却下が採用を上回りかつ3件以上**のときだけ発動します。以前は「3件以上却下」だけを
+条件にしていたため、根拠が十分取れているターンでもCall Aが二重に走り、
+トークンと待ち時間を無駄にしていました。
+
+破棄は `console.warn` に記録され、さらに件数と理由が `TurnDiagnostic` に永続化されます。
+
+### 8.1 抽出が失敗していることを隠さない（`engine/extractionHealth.ts`）
+
+ループ内のLLM呼び出しは**すべてfail-soft**です。Call Aが落ちても会話は続き、
+質問はフォールバックに切り替わります。可用性としては正しいのですが、副作用として
+**AIの障害と「話の内容が薄かった」が同じ画面になります**。どちらも根拠0件・
+カバー率0%・「情報不足」に着地するからです。
+
+これは本アプリにとって最悪の誤読です。システム障害を、利用者が自分についての
+評価だと受け取ってしまいます。そこで `TurnDiagnostic` を集計して原因を分類します。
+
+| status | 意味 | 判定条件 |
+|---|---|---|
+| `ok` | 正常 | 根拠が採用されている |
+| `analyst_down` | Call A自体が失敗 | 対象ターンの半数以上で例外 |
+| `quotes_ungrounded` | 抽出はできたが引用が全部不一致 | 採用0件・却下1件以上 |
+| `sparse_answers` | 抽出対象が本当に無かった | 採用0件・却下0件・抽出0件 |
+
+判定は**直近3ターン**を見ます。1ターンの失敗では騒がず、継続して失敗したときだけ
+`degraded` を立てます。復帰すれば自動的に消えます。
+
+- 結果画面: `ExtractionHealthNotice` が原因と内訳（抽出/採用/破棄件数、破棄理由）を表示
+- 会話画面: `degraded` のときだけ「読み取りが続けて失敗しています」と表示
+
+会話画面の表示は §29（対話中はスコアを見せない）を破りません。**何が読み取れたかは
+一切出さず、読み取り処理が失敗しているという事実だけ**を伝えます。
 
 ---
 
@@ -376,7 +430,7 @@ Evidenceは必ずユーザーの発話からの逐語引用を伴います。
 ## 10. テスト
 
 ```bash
-npm test     # 11ファイル / 105ケース
+npm test     # 12ファイル / 121ケース
 ```
 
 エンジンはすべて純粋関数なので、**テストはLLMを一度も呼びません**。Call A / Call B の応答は
@@ -385,7 +439,8 @@ npm test     # 11ファイル / 105ケース
 | ファイル | 検証内容 |
 |---|---|
 | `evidence.test.ts` | fixture→期待要素へのマッピング / 8件・6要素の上限 |
-| `quoteVerifier.test.ts` | 捏造引用の破棄 / 表記ゆれの許容 / 再実行トリガ |
+| `quoteVerifier.test.ts` | 捏造引用の破棄 / 表記ゆれの許容 / 短い引用は完全一致のみ / 却下理由の集計 / 再実行トリガ |
+| `extractionHealth.test.ts` | 障害・捏造引用・薄い回答の判定 / 直近ウィンドウでの劣化検知 |
 | `score.test.ts` | 上昇・下降・neutral不変 / 0-100 clamp / ±15上限 / 高Confidence時の減衰 |
 | `confidence.test.ts` | 同type大量→0.40頭打ち / 3type以上→0.85到達 / 矛盾ペナルティと復元 |
 | `diversity.test.ts` | 同type×3 < 5type混合 |
@@ -410,12 +465,16 @@ npm test     # 11ファイル / 105ケース
 
 | 項目 | 結果 |
 |---|---|
-| `npm test` | 11ファイル / 105ケース 全通過 |
+| `npm test` | 12ファイル / 121ケース 全通過 |
 | `npx tsc --noEmit` | エラーなし |
 | `npx eslint .` | エラー・警告なし |
 | `npm run build` | 成功（8ルート） |
 | start → 30ターン → 強制終了 | Evidence 62件 / 矛盾40件（うち20件解消）/ Score範囲 78.5–100 / 軸にNaNなし |
 | 引用検証 | 捏造引用が破棄されることをテストで確認 |
+| `MOCK_MODE=grounded` 5ターン | 根拠15件・警告なし・Call A再実行0回（`repaired=false`） |
+| `MOCK_MODE=outage` 5ターン | 根拠0件・「システムエラー」表示・`analystOk=false` が5ターン記録 |
+| `MOCK_MODE=ungrounded` 5ターン | 根拠0件・「引用の照合に失敗」表示・破棄30件（`not_grounded`） |
+| 会話画面の劣化表示 | outageで2ターン目から「読み取りが続けて失敗しています」を表示 |
 | 矛盾 | 検出時に両Evidenceが保持され、関与要素のConfidenceが低下 |
 | 同時POST | 一方200・他方409 `SESSION_BUSY` |
 | 入力検証 | 空400 / 4000字超400 / 不正JSON400 / 未知セッション404 / 終了済み409 |

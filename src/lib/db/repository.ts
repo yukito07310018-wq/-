@@ -203,6 +203,59 @@ export async function loadAskedQuestions(sessionId: string): Promise<AskedQuesti
   }));
 }
 
+export interface TurnDiagnosticRecord {
+  turn: number;
+  analystOk: boolean;
+  analystError: string | null;
+  extracted: number;
+  accepted: number;
+  rejected: number;
+  rejectedReasons: Record<string, number>;
+  repaired: boolean;
+  droppedByLimits: number;
+  questionSource: QuestionSource;
+}
+
+/** Where the next question came from — "none" when the turn ended the interview. */
+export type QuestionSource = "llm" | "fallback" | "exhausted" | "none";
+
+function parseCountMap(raw: string): Record<string, number> {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function asQuestionSource(value: string): QuestionSource {
+  return value === "fallback" || value === "exhausted" || value === "llm" ? value : "none";
+}
+
+export async function loadTurnDiagnostics(sessionId: string): Promise<TurnDiagnosticRecord[]> {
+  const rows = await prisma.turnDiagnostic.findMany({
+    where: { sessionId },
+    orderBy: { turn: "asc" },
+  });
+  return rows.map((r) => ({
+    turn: r.turn,
+    analystOk: r.analystOk,
+    analystError: r.analystError,
+    extracted: r.extracted,
+    accepted: r.accepted,
+    rejected: r.rejected,
+    rejectedReasons: parseCountMap(r.rejectedReasons),
+    repaired: r.repaired,
+    droppedByLimits: r.droppedByLimits,
+    questionSource: asQuestionSource(r.questionSource),
+  }));
+}
+
 export interface ConversationMessage {
   turnIndex: number;
   role: "user" | "assistant";
@@ -285,6 +338,8 @@ export interface PersistTurnInput {
   newContradictions: Contradiction[];
   resolutions: { contradiction_id: string; resolution_note: string }[];
   axes: AxisAggregate[];
+  /** Why this turn produced the evidence it did; written in the same transaction. */
+  diagnostic: Omit<TurnDiagnosticRecord, "turn" | "questionSource">;
 }
 
 /**
@@ -383,6 +438,54 @@ export async function persistTurn(input: PersistTurnInput): Promise<void> {
       });
     }
 
+    const d = input.diagnostic;
+    await tx.turnDiagnostic.upsert({
+      where: { sessionId_turn: { sessionId, turn } },
+      create: {
+        sessionId,
+        turn,
+        analystOk: d.analystOk,
+        analystError: d.analystError,
+        extracted: d.extracted,
+        accepted: d.accepted,
+        rejected: d.rejected,
+        rejectedReasons: JSON.stringify(d.rejectedReasons),
+        repaired: d.repaired,
+        droppedByLimits: d.droppedByLimits,
+      },
+      update: {
+        analystOk: d.analystOk,
+        analystError: d.analystError,
+        extracted: d.extracted,
+        accepted: d.accepted,
+        rejected: d.rejected,
+        rejectedReasons: JSON.stringify(d.rejectedReasons),
+        repaired: d.repaired,
+        droppedByLimits: d.droppedByLimits,
+      },
+    });
+
     await tx.session.update({ where: { id: sessionId }, data: { turnCount: turn } });
   });
+}
+
+/**
+ * Records where the next question came from, once it is known.
+ *
+ * Deliberately outside persistTurn's transaction and non-fatal: this is
+ * observability, and it must never be able to fail an interview turn.
+ */
+export async function recordQuestionSource(
+  sessionId: string,
+  turn: number,
+  source: QuestionSource
+): Promise<void> {
+  try {
+    await prisma.turnDiagnostic.updateMany({
+      where: { sessionId, turn },
+      data: { questionSource: source },
+    });
+  } catch (error) {
+    console.error("[repository] failed to record question source:", error);
+  }
 }

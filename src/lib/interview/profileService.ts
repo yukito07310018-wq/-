@@ -1,4 +1,5 @@
 import { aggregateAxes, diagnosisConfidence, overallCoverage } from "../engine/aggregation";
+import { assessExtraction, type ExtractionHealth } from "../engine/extractionHealth";
 import { evidenceMagnitude } from "../engine/scoreEngine";
 import { AXES } from "../model/axes";
 import { getElement } from "../model/elements";
@@ -40,16 +41,19 @@ export interface ProfileResponse {
   diagnosis_confidence: number;
   coverage: number;
   turn: number;
+  /** §36 — whether zero evidence means "nothing to say" or "the pipeline broke". */
+  extraction_health: ExtractionHealth;
 }
 
 export async function buildProfile(sessionId: string): Promise<ProfileResponse | null> {
   const session = await repo.getSession(sessionId);
   if (!session) return null;
 
-  const [states, evidence, contradictions] = await Promise.all([
+  const [states, evidence, contradictions, diagnostics] = await Promise.all([
     repo.loadElementStates(sessionId),
     repo.loadEvidence(sessionId),
     repo.loadContradictions(sessionId),
+    repo.loadTurnDiagnostics(sessionId),
   ]);
 
   const axes = aggregateAxes(states);
@@ -70,6 +74,7 @@ export async function buildProfile(sessionId: string): Promise<ProfileResponse |
     diagnosis_confidence: diagnosisConfidence(states),
     coverage: overallCoverage(axes),
     turn: session.turnCount,
+    extraction_health: assessExtraction(diagnostics),
   };
 }
 
