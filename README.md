@@ -75,7 +75,7 @@ AIとの対話から、**100要素・10軸の個人モデル**を継続的に構
 │                              ├ contradictionEngine 矛盾検出／解消          │
 │                              └ aggregation        10軸集約                │
 │   6.   db/repository.persistTurn            1トランザクションで永続化      │
-│        └ TurnDiagnostic                     抽出の成否と内訳も同時に記録   │
+│        └ saveTurnDiagnostic                 抽出の成否と内訳を記録（非致命）│
 │   7.   engine/extractionHealth              抽出が壊れていないかの判定     │
 │   8.   engine/terminationEngine             終了判定                       │
 │   9. ★ ai/interviewerCall     (LLM, 温度0.7) 質問候補3〜5件               │
@@ -190,6 +190,11 @@ curl -X POST --data outage http://127.0.0.1:8787/__mock/mode
 | `QuestionHistory` | 出題履歴（類似質問の抑止に使用） |
 | `AxisSnapshot` | ターンごとの10軸スナップショット（飽和判定にも使用） |
 | `TurnDiagnostic` | ターンごとの抽出内訳。Call Aの成否・抽出/採用/却下件数・却下理由・再実行の有無・質問の出所 |
+
+`TurnDiagnostic` だけは**任意テーブル**として扱います。読み書きとも `try/catch` で
+握りつぶし、失敗しても対話は止めません。移行は手動運用（`npm run db:migrate`）なので
+移行前のコードがデプロイされうるためで、原因を説明するための仕組みが原因不明の全断を
+起こしては本末転倒だからです。テーブルが無い場合は「診断データなし」に退化します。
 
 配列はすべて**JSON文字列**で保持します（配列型を持たないSQLite時代の名残で、
 PostgreSQL移行後もスキーマ互換のため維持）。この変換は
@@ -475,6 +480,7 @@ npm test     # 12ファイル / 121ケース
 | `MOCK_MODE=outage` 5ターン | 根拠0件・「システムエラー」表示・`analystOk=false` が5ターン記録 |
 | `MOCK_MODE=ungrounded` 5ターン | 根拠0件・「引用の照合に失敗」表示・破棄30件（`not_grounded`） |
 | 会話画面の劣化表示 | outageで2ターン目から「読み取りが続けて失敗しています」を表示 |
+| `TurnDiagnostic` を DROP して5ターン | 500応答0件・根拠15件で完走。エラーはログに16件、画面は「診断データなし」に退化 |
 | 矛盾 | 検出時に両Evidenceが保持され、関与要素のConfidenceが低下 |
 | 同時POST | 一方200・他方409 `SESSION_BUSY` |
 | 入力検証 | 空400 / 4000字超400 / 不正JSON400 / 未知セッション404 / 終了済み409 |

@@ -139,8 +139,11 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     newContradictions: update.newContradictions,
     resolutions: update.resolutions,
     axes: update.axes,
-    diagnostic,
   });
+
+  // After the turn is committed, never as part of it: a diagnostic that cannot
+  // be written is a lost log line, not a reason to fail the interview.
+  await repo.saveTurnDiagnostic(sessionId, turn, diagnostic);
 
   // §29 keeps scores off the interview screen, but a broken pipeline is not a
   // score — leaving it hidden is what let five turns produce nothing in silence.

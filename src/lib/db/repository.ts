@@ -237,11 +237,27 @@ function asQuestionSource(value: string): QuestionSource {
   return value === "fallback" || value === "exhausted" || value === "llm" ? value : "none";
 }
 
+/**
+ * TurnDiagnostic is the one table the app treats as optional.
+ *
+ * It records why a turn produced the evidence it did — useful, but never worth
+ * an interview. Migrations here are applied by hand (`npm run db:migrate`, kept
+ * out of the build on purpose), so a deploy can land ahead of its migration; if
+ * that took down every turn, this diagnostic would cause worse outages than the
+ * ones it exists to explain. Both directions therefore degrade to "no data".
+ */
 export async function loadTurnDiagnostics(sessionId: string): Promise<TurnDiagnosticRecord[]> {
-  const rows = await prisma.turnDiagnostic.findMany({
-    where: { sessionId },
-    orderBy: { turn: "asc" },
-  });
+  let rows;
+  try {
+    rows = await prisma.turnDiagnostic.findMany({
+      where: { sessionId },
+      orderBy: { turn: "asc" },
+    });
+  } catch (error) {
+    console.error("[repository] failed to load turn diagnostics:", error);
+    return [];
+  }
+
   return rows.map((r) => ({
     turn: r.turn,
     analystOk: r.analystOk,
@@ -338,9 +354,10 @@ export interface PersistTurnInput {
   newContradictions: Contradiction[];
   resolutions: { contradiction_id: string; resolution_note: string }[];
   axes: AxisAggregate[];
-  /** Why this turn produced the evidence it did; written in the same transaction. */
-  diagnostic: Omit<TurnDiagnosticRecord, "turn" | "questionSource">;
 }
+
+/** Why a turn produced the evidence it did, minus the fields filled in later. */
+export type TurnDiagnosticInput = Omit<TurnDiagnosticRecord, "turn" | "questionSource">;
 
 /**
  * Persists one turn's model update atomically.
@@ -438,43 +455,42 @@ export async function persistTurn(input: PersistTurnInput): Promise<void> {
       });
     }
 
-    const d = input.diagnostic;
-    await tx.turnDiagnostic.upsert({
-      where: { sessionId_turn: { sessionId, turn } },
-      create: {
-        sessionId,
-        turn,
-        analystOk: d.analystOk,
-        analystError: d.analystError,
-        extracted: d.extracted,
-        accepted: d.accepted,
-        rejected: d.rejected,
-        rejectedReasons: JSON.stringify(d.rejectedReasons),
-        repaired: d.repaired,
-        droppedByLimits: d.droppedByLimits,
-      },
-      update: {
-        analystOk: d.analystOk,
-        analystError: d.analystError,
-        extracted: d.extracted,
-        accepted: d.accepted,
-        rejected: d.rejected,
-        rejectedReasons: JSON.stringify(d.rejectedReasons),
-        repaired: d.repaired,
-        droppedByLimits: d.droppedByLimits,
-      },
-    });
-
     await tx.session.update({ where: { id: sessionId }, data: { turnCount: turn } });
   });
 }
 
 /**
- * Records where the next question came from, once it is known.
- *
- * Deliberately outside persistTurn's transaction and non-fatal: this is
- * observability, and it must never be able to fail an interview turn.
+ * Records why a turn extracted what it did. Non-fatal by design — see
+ * loadTurnDiagnostics for why this table must not be able to fail a turn.
  */
+export async function saveTurnDiagnostic(
+  sessionId: string,
+  turn: number,
+  d: TurnDiagnosticInput
+): Promise<void> {
+  const fields = {
+    analystOk: d.analystOk,
+    analystError: d.analystError,
+    extracted: d.extracted,
+    accepted: d.accepted,
+    rejected: d.rejected,
+    rejectedReasons: JSON.stringify(d.rejectedReasons),
+    repaired: d.repaired,
+    droppedByLimits: d.droppedByLimits,
+  };
+
+  try {
+    await prisma.turnDiagnostic.upsert({
+      where: { sessionId_turn: { sessionId, turn } },
+      create: { sessionId, turn, ...fields },
+      update: fields,
+    });
+  } catch (error) {
+    console.error("[repository] failed to save turn diagnostic:", error);
+  }
+}
+
+/** Records where the next question came from, once it is known. Non-fatal. */
 export async function recordQuestionSource(
   sessionId: string,
   turn: number,
