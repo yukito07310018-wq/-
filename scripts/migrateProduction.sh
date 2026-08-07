@@ -174,11 +174,24 @@ printf '%s\n' "$deploy_output"
 if printf '%s' "$deploy_output" | grep -q 'P3005'; then
   echo
   echo "==> Database already has tables; checking it matches the schema"
+  # --exit-code reports 0 for an empty diff, 2 for a real one, and 1 for its own
+  # failure, so the three have to be told apart: treating any non-zero as drift
+  # turns a CLI error into a false report that the schema diverged.
   drift_status=0
   drift="$(DATABASE_URL="$DATABASE_URL" npx prisma migrate diff \
-    --from-url "$DATABASE_URL" \
-    --to-schema-datamodel prisma/schema.prisma \
+    --from-config-datasource \
+    --to-schema prisma/schema.prisma \
     --script --exit-code 2>&1)" || drift_status=$?
+
+  if [ "$drift_status" -eq 1 ]; then
+    echo >&2
+    echo "Could not compare the deployed schema against prisma/schema.prisma:" >&2
+    echo >&2
+    printf '%s\n' "$drift" >&2
+    echo >&2
+    echo "Nothing was changed. This is a tooling failure, not schema drift." >&2
+    exit 1
+  fi
 
   if [ "$drift_status" -ne 0 ]; then
     echo >&2
