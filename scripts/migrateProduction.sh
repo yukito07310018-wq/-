@@ -162,7 +162,46 @@ fi
 
 echo
 echo "==> Applying migrations"
-DATABASE_URL="$DATABASE_URL" npx prisma migrate deploy
+deploy_output="$(DATABASE_URL="$DATABASE_URL" npx prisma migrate deploy 2>&1 || true)"
+printf '%s\n' "$deploy_output"
+
+# P3005 means the tables already exist but no migration was ever recorded —
+# typically a schema first created with `db push`. The migration cannot be
+# replayed over them, so the history has to be baselined instead. That is only
+# sound if what is already deployed matches what the migration would have
+# built: `migrate diff` renders the SQL that would still be needed to reach the
+# target schema, and an empty result is proof there is nothing left to apply.
+if printf '%s' "$deploy_output" | grep -q 'P3005'; then
+  echo
+  echo "==> Database already has tables; checking it matches the schema"
+  drift_status=0
+  drift="$(DATABASE_URL="$DATABASE_URL" npx prisma migrate diff \
+    --from-url "$DATABASE_URL" \
+    --to-schema-datamodel prisma/schema.prisma \
+    --script --exit-code 2>&1)" || drift_status=$?
+
+  if [ "$drift_status" -ne 0 ]; then
+    echo >&2
+    echo "The deployed schema differs from prisma/schema.prisma, so the history" >&2
+    echo "cannot be baselined — recording the migration as applied would hide" >&2
+    echo "this drift. SQL still needed to reach the target schema:" >&2
+    echo >&2
+    printf '%s\n' "$drift" >&2
+    echo >&2
+    echo "Nothing was changed. Reconcile the schema before migrating." >&2
+    exit 1
+  fi
+
+  echo "    No drift — the deployed schema already matches the target."
+  for name in $pending; do
+    echo "==> Recording $name as applied"
+    DATABASE_URL="$DATABASE_URL" npx prisma migrate resolve --applied "$name"
+  done
+elif printf '%s' "$deploy_output" | grep -qE 'Error: P[0-9]{4}'; then
+  echo >&2
+  echo "Migration failed; see the error above." >&2
+  exit 1
+fi
 
 echo
 echo "==> Migration status after applying"
