@@ -23,6 +23,7 @@ vercel env pull "$ENV_FILE" --environment=production
 read_env() {
   local value
   value="$(grep "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2-)" || return 1
+  value="${value%$'\r'}"
   value="${value%\"}"
   value="${value#\"}"
   printf '%s' "$value"
@@ -50,16 +51,24 @@ done
 if [ -z "$DATABASE_URL" ]; then
   echo >&2
   echo "No variable in $ENV_FILE holds a direct postgres:// connection string." >&2
-  echo "Schemes found (credentials not shown):" >&2
-  grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" | while IFS= read -r line; do
+  # Names and URL schemes are not secrets, so listing every variable is safe and
+  # says whether the file is malformed, empty, or simply has no direct URL.
+  echo "$ENV_FILE holds $(wc -l < "$ENV_FILE") lines, $(wc -c < "$ENV_FILE") bytes." >&2
+  echo "Variables found (names and schemes only, values not shown):" >&2
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    case "$line" in ''|'#'*) continue ;; esac
+    case "$line" in *=*) ;; *) printf '  (unparsed line)\n' >&2; continue ;; esac
     name="${line%%=*}"
     value="${line#*=}"
     value="${value%\"}"
     value="${value#\"}"
     case "$value" in
       *://*) printf '  %s = %s://…\n' "$name" "${value%%://*}" >&2 ;;
+      '')    printf '  %s = (empty)\n' "$name" >&2 ;;
+      *)     printf '  %s = (not a URL)\n' "$name" >&2 ;;
     esac
-  done
+  done < "$ENV_FILE"
   exit 1
 fi
 
