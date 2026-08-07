@@ -17,13 +17,49 @@ ENV_FILE=".env.production"
 echo "==> Pulling production environment from Vercel"
 vercel env pull "$ENV_FILE" --environment=production
 
-# Read DATABASE_URL out of the pulled file without exporting the rest of it;
-# the file also carries POSTGRES_URL and postgres_prisma_* aliases that Prisma
-# would happily connect to instead if they leaked into the environment.
-DATABASE_URL="$(grep '^DATABASE_URL=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"'"'"'')"
+# Read one variable out of the pulled file without sourcing it; the file also
+# carries POSTGRES_URL and postgres_prisma_* aliases that would otherwise land
+# in the environment and become the connection target by accident.
+read_env() {
+  local value
+  value="$(grep "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2-)" || return 1
+  value="${value%\"}"
+  value="${value#\"}"
+  printf '%s' "$value"
+}
+
+# Vercel's Prisma Postgres integration points DATABASE_URL at the Accelerate
+# proxy (prisma+postgres://), which the migration engine cannot open a
+# connection through. Fall back to whichever alias carries a direct
+# postgres:// URL so migrations run against the database itself.
+CANDIDATES="DATABASE_URL POSTGRES_URL_NON_POOLING DIRECT_DATABASE_URL POSTGRES_URL postgres_prisma_POSTGRES_URL postgres_prisma_DATABASE_URL"
+
+DATABASE_URL=""
+CHOSEN=""
+for name in $CANDIDATES; do
+  candidate="$(read_env "$name" || true)"
+  case "$candidate" in
+    postgres://*|postgresql://*)
+      DATABASE_URL="$candidate"
+      CHOSEN="$name"
+      break
+      ;;
+  esac
+done
 
 if [ -z "$DATABASE_URL" ]; then
-  echo "DATABASE_URL is not present in $ENV_FILE" >&2
+  echo >&2
+  echo "No variable in $ENV_FILE holds a direct postgres:// connection string." >&2
+  echo "Schemes found (credentials not shown):" >&2
+  grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" | while IFS= read -r line; do
+    name="${line%%=*}"
+    value="${line#*=}"
+    value="${value%\"}"
+    value="${value#\"}"
+    case "$value" in
+      *://*) printf '  %s = %s://…\n' "$name" "${value%%://*}" >&2 ;;
+    esac
+  done
   exit 1
 fi
 
@@ -31,12 +67,23 @@ fi
 # without printing the credential to a terminal or CI log.
 masked="$(printf '%s' "$DATABASE_URL" | sed -E 's#(://[^:]+:)[^@]+(@)#\1****\2#')"
 echo
-echo "==> Target database"
+echo "==> Target database (from \$$CHOSEN)"
 echo "    $masked"
 
+# `migrate status` exits non-zero both for "migrations are pending" — the whole
+# reason this script runs — and for connection failures, so the exit code alone
+# cannot gate the prompt. Abort on a P1xxx connection error instead, rather than
+# asking to apply migrations to a database that was never reached.
 echo
 echo "==> Migration status before applying"
-DATABASE_URL="$DATABASE_URL" npx prisma migrate status || true
+status_output="$(DATABASE_URL="$DATABASE_URL" npx prisma migrate status 2>&1 || true)"
+printf '%s\n' "$status_output"
+
+if printf '%s' "$status_output" | grep -qE 'Error: P1[0-9]{3}'; then
+  echo >&2
+  echo "Could not connect to the database; nothing was applied." >&2
+  exit 1
+fi
 
 echo
 read -r -p "Apply the migrations above to THIS database? (yes/no) " reply
