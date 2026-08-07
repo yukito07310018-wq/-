@@ -1,112 +1,125 @@
+-- CreateSchema
+CREATE SCHEMA IF NOT EXISTS "public";
+
 -- CreateTable
 CREATE TABLE "User" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "id" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "User_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
 CREATE TABLE "Session" (
-    "id" TEXT NOT NULL PRIMARY KEY,
+    "id" TEXT NOT NULL,
     "userId" TEXT,
     "status" TEXT NOT NULL DEFAULT 'active',
     "processing" BOOLEAN NOT NULL DEFAULT false,
     "turnCount" INTEGER NOT NULL DEFAULT 0,
-    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" DATETIME NOT NULL,
-    CONSTRAINT "Session_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "Session_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
 CREATE TABLE "ConversationTurn" (
-    "id" TEXT NOT NULL PRIMARY KEY,
+    "id" TEXT NOT NULL,
     "sessionId" TEXT NOT NULL,
     "turnIndex" INTEGER NOT NULL,
     "role" TEXT NOT NULL,
     "content" TEXT NOT NULL,
-    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT "ConversationTurn_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "Session" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "ConversationTurn_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
 CREATE TABLE "ElementState" (
-    "id" TEXT NOT NULL PRIMARY KEY,
+    "id" TEXT NOT NULL,
     "sessionId" TEXT NOT NULL,
     "elementId" TEXT NOT NULL,
-    "score" REAL NOT NULL DEFAULT 50,
-    "confidence" REAL NOT NULL DEFAULT 0,
+    "score" DOUBLE PRECISION NOT NULL DEFAULT 50,
+    "confidence" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "evidenceCount" INTEGER NOT NULL DEFAULT 0,
-    "evidenceDiversity" REAL NOT NULL DEFAULT 0,
+    "evidenceDiversity" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "evidenceTypes" TEXT NOT NULL DEFAULT '[]',
     "lastUpdatedTurn" INTEGER NOT NULL DEFAULT 0,
-    CONSTRAINT "ElementState_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "Session" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+
+    CONSTRAINT "ElementState_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
 CREATE TABLE "Evidence" (
-    "id" TEXT NOT NULL PRIMARY KEY,
+    "id" TEXT NOT NULL,
     "sessionId" TEXT NOT NULL,
     "turnId" INTEGER NOT NULL,
     "elementId" TEXT NOT NULL,
     "quote" TEXT NOT NULL,
     "type" TEXT NOT NULL,
-    "strength" REAL NOT NULL,
-    "reliability" REAL NOT NULL,
+    "strength" DOUBLE PRECISION NOT NULL,
+    "reliability" DOUBLE PRECISION NOT NULL,
     "direction" TEXT NOT NULL,
     "context" TEXT NOT NULL,
-    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT "Evidence_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "Session" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "Evidence_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
 CREATE TABLE "ScoreHistory" (
-    "id" TEXT NOT NULL PRIMARY KEY,
+    "id" TEXT NOT NULL,
     "elementStateId" TEXT NOT NULL,
     "turn" INTEGER NOT NULL,
-    "score" REAL NOT NULL,
-    "confidence" REAL NOT NULL,
-    "delta" REAL NOT NULL,
+    "score" DOUBLE PRECISION NOT NULL,
+    "confidence" DOUBLE PRECISION NOT NULL,
+    "delta" DOUBLE PRECISION NOT NULL,
     "causeEvidenceIds" TEXT NOT NULL DEFAULT '[]',
-    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT "ScoreHistory_elementStateId_fkey" FOREIGN KEY ("elementStateId") REFERENCES "ElementState" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "ScoreHistory_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
 CREATE TABLE "Contradiction" (
-    "id" TEXT NOT NULL PRIMARY KEY,
+    "id" TEXT NOT NULL,
     "sessionId" TEXT NOT NULL,
     "elementIds" TEXT NOT NULL,
     "evidenceAId" TEXT NOT NULL,
     "evidenceBId" TEXT NOT NULL,
-    "severity" REAL NOT NULL,
+    "severity" DOUBLE PRECISION NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'unresolved',
     "detectedTurn" INTEGER NOT NULL,
     "resolutionNote" TEXT,
-    CONSTRAINT "Contradiction_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "Session" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+
+    CONSTRAINT "Contradiction_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
 CREATE TABLE "QuestionHistory" (
-    "id" TEXT NOT NULL PRIMARY KEY,
+    "id" TEXT NOT NULL,
     "sessionId" TEXT NOT NULL,
     "turn" INTEGER NOT NULL,
     "text" TEXT NOT NULL,
     "targetElements" TEXT NOT NULL,
     "probeKind" TEXT NOT NULL,
-    "qValue" REAL NOT NULL,
-    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT "QuestionHistory_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "Session" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    "qValue" DOUBLE PRECISION NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "QuestionHistory_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
 CREATE TABLE "AxisSnapshot" (
-    "id" TEXT NOT NULL PRIMARY KEY,
+    "id" TEXT NOT NULL,
     "sessionId" TEXT NOT NULL,
     "turn" INTEGER NOT NULL,
     "axisId" TEXT NOT NULL,
-    "score" REAL NOT NULL,
-    "confidence" REAL NOT NULL,
-    "coverage" REAL NOT NULL,
-    CONSTRAINT "AxisSnapshot_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "Session" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    "score" DOUBLE PRECISION NOT NULL,
+    "confidence" DOUBLE PRECISION NOT NULL,
+    "coverage" DOUBLE PRECISION NOT NULL,
+
+    CONSTRAINT "AxisSnapshot_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateIndex
@@ -132,3 +145,28 @@ CREATE INDEX "QuestionHistory_sessionId_idx" ON "QuestionHistory"("sessionId");
 
 -- CreateIndex
 CREATE INDEX "AxisSnapshot_sessionId_turn_idx" ON "AxisSnapshot"("sessionId", "turn");
+
+-- AddForeignKey
+ALTER TABLE "Session" ADD CONSTRAINT "Session_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "ConversationTurn" ADD CONSTRAINT "ConversationTurn_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "Session"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "ElementState" ADD CONSTRAINT "ElementState_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "Session"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Evidence" ADD CONSTRAINT "Evidence_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "Session"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "ScoreHistory" ADD CONSTRAINT "ScoreHistory_elementStateId_fkey" FOREIGN KEY ("elementStateId") REFERENCES "ElementState"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Contradiction" ADD CONSTRAINT "Contradiction_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "Session"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "QuestionHistory" ADD CONSTRAINT "QuestionHistory_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "Session"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "AxisSnapshot" ADD CONSTRAINT "AxisSnapshot_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "Session"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+

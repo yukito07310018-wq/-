@@ -1,6 +1,7 @@
-// SQLite has no array type: every array is stored as a JSON string and is
-// converted at the repository boundary (src/lib/db/repository.ts) so domain
-// code never sees JSON.parse.
+// Every array is stored as a JSON string and converted at the repository
+// boundary (src/lib/db/repository.ts) so domain code never sees JSON.parse.
+// This dates from the SQLite schema, which had no array type; it is kept after
+// the move to PostgreSQL so the stored shape stays unchanged.
 
 generator client {
   provider = "prisma-client-js"
