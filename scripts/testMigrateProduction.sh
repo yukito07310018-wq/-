@@ -18,7 +18,25 @@ if [ -z "$PGBIN" ] || [ ! -x "$PGBIN/initdb" ]; then
   exit 0
 fi
 
-PORT=5433
+if [ ! -x node_modules/.bin/prisma ]; then
+  echo "Prisma is not installed; run npm install first." >&2
+  exit 1
+fi
+
+# Take a port nothing is listening on, so a PostgreSQL already running on the
+# usual one does not silently become the database under test.
+PORT=""
+for candidate in $(seq 5440 5470); do
+  if ! (exec 3<>/dev/tcp/127.0.0.1/"$candidate") 2>/dev/null; then
+    PORT="$candidate"
+    break
+  fi
+done
+if [ -z "$PORT" ]; then
+  echo "No free port in 5440-5470 for the test cluster." >&2
+  exit 1
+fi
+
 WORK="$(mktemp -d)"
 # initdb refuses to run as root, so hand the cluster to the postgres account
 # when this is running as root and fall back to the current user otherwise.
@@ -127,6 +145,19 @@ echo "== a connection string that is not a URL is rejected"
 sandbox
 out="$(run_script "DATABASE_URL=[SENSITIVE]")"
 check "placeholder rejected" "is not a postgres:// or prisma+postgres:// URL" "$out"
+
+echo "== the printed target never shows the password"
+sandbox
+# The @ inside the password is the interesting part: masking only as far as the
+# first one leaves the rest of it on screen.
+out="$(run_script "DATABASE_URL=postgres://someone:pa@ss@127.0.0.1:5499/nope")"
+check "password blanked" "someone:****@127.0.0.1:5499" "$out"
+if printf '%s' "$out" | grep -qF 'pa@ss'; then
+  echo "  FAIL  password absent from output — found it in the printed target"
+  failures=$((failures + 1))
+else
+  echo "  ok    password absent from output"
+fi
 
 echo
 if [ "$failures" -eq 0 ]; then

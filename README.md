@@ -125,6 +125,26 @@ DATABASE_URL="postgresql://..." npm run db:migrate
 追跡するため再実行しても安全です。`db:push` はスキーマを直接同期するもので、
 ローカルの試行錯誤用です。
 
+`scripts/migrateProduction.sh` は上記2をガード付きで行います。接続先をパスワードを
+伏せて表示し、行を消しうるSQL（`DROP` / `TRUNCATE` / `DELETE FROM` など）が未適用の
+移行に含まれていれば適用せず停止します（承知のうえで進めるときは
+`CONFIRM_DESTRUCTIVE=1`）。`db:push` で作ったスキーマに対して `migrate deploy` は
+P3005 で止まりますが、このスクリプトは現物と `schema.prisma` の差分が空であることを
+確認したうえで履歴だけを記録（ベースライン化）します。差分があれば記録しません。
+
+```bash
+bash scripts/migrateProduction.sh                     # Vercelから環境変数を取得して適用
+DATABASE_URL='postgres://…' bash scripts/migrateProduction.sh  # 接続先を直接指定
+```
+
+VercelでSensitiveに設定した環境変数は作成後に読み出せず、`vercel env pull` は値の
+代わりに `[SENSITIVE]` という文字列を書き込みます。`DATABASE_URL` がこれに該当する
+場合、何度pullしても接続文字列は得られないので、DBのダッシュボードから取得して
+上の第2形式で渡してください。
+
+`scripts/testMigrateProduction.sh` は使い捨てのPostgreSQLを立てて上記の分岐（空のDB／
+履歴なしのスキーマ／差分あり／破壊的な移行／接続不可）を実際に流します。
+
 `verifyModelAccess()`（`src/lib/ai/client.ts`）でモデルへの疎通確認ができます。失敗時は
 モデル名と環境変数名を含む日本語メッセージを投げます。
 
@@ -140,6 +160,9 @@ npm run db:migrate  # 移行を適用（本番向け・再実行安全）
 npm run db:push     # スキーマを直接同期（ローカル用）
 npm run db:push:dev # 同上・データ欠損を許容（ローカル専用。本番では使わない）
 npm run db:generate # Prisma Client を再生成
+
+bash scripts/migrateProduction.sh     # 本番へ移行を適用（ガード付き）
+bash scripts/testMigrateProduction.sh # 上記スクリプトを使い捨てDBで検証
 node scripts/genElements.mjs         # data/*.json を再生成
 node scripts/inspectSession.mjs <id> # セッションの行数を確認
 ```

@@ -106,8 +106,12 @@ if [ -z "${DATABASE_URL:-}" ]; then
 fi
 
 # Show the target with the password blanked, so the host can be eyeballed
-# without printing the credential to a terminal or CI log.
-masked="$(printf '%s' "$DATABASE_URL" | sed -E 's#(://[^:]+:)[^@]+(@)#\1****\2#')"
+# without printing the credential to a terminal or CI log. The password runs to
+# the last @ in the authority, not the first: stopping at the first one leaks
+# the tail of any password that itself contains an @. Confining the match to
+# characters before the next / keeps an @ in the query string from swallowing
+# the host as well.
+masked="$(printf '%s' "$DATABASE_URL" | sed -E 's#(://[^:/]+:)[^/]*@#\1****@#')"
 echo
 echo "==> Target database (from \$$CHOSEN)"
 echo "    $masked"
