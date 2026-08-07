@@ -85,11 +85,37 @@ if printf '%s' "$status_output" | grep -qE 'Error: P1[0-9]{3}'; then
   exit 1
 fi
 
-echo
-read -r -p "Apply the migrations above to THIS database? (yes/no) " reply
-if [ "$reply" != "yes" ]; then
-  echo "Aborted; nothing was applied."
-  exit 1
+# Everything above this point is reversible; `migrate deploy` is not. Rather
+# than asking a human to rubber-stamp every run, gate on the one property that
+# actually distinguishes a safe migration from a dangerous one: whether the SQL
+# about to run can destroy existing rows. A pending migration that only creates
+# tables applies unattended; one that drops or truncates stops here.
+pending="$(printf '%s' "$status_output" | grep -oE '[0-9]{14}_[A-Za-z0-9_]+' | sort -u || true)"
+
+destructive=""
+for name in $pending; do
+  file="prisma/migrations/$name/migration.sql"
+  [ -f "$file" ] || continue
+  hits="$(grep -inE 'DROP[[:space:]]+(TABLE|COLUMN|SCHEMA|DATABASE)|TRUNCATE|DELETE[[:space:]]+FROM|ALTER[[:space:]]+COLUMN.*TYPE' "$file" || true)"
+  if [ -n "$hits" ]; then
+    destructive="$destructive
+$name:
+$hits"
+  fi
+done
+
+if [ -n "$destructive" ]; then
+  echo >&2
+  echo "Pending migrations contain statements that can destroy existing data:" >&2
+  printf '%s\n' "$destructive" >&2
+  echo >&2
+  if [ "${CONFIRM_DESTRUCTIVE:-}" = "1" ]; then
+    echo "CONFIRM_DESTRUCTIVE=1 set — applying anyway." >&2
+  else
+    echo "Nothing was applied. Review the SQL, confirm a backup exists, then re-run" >&2
+    echo "with CONFIRM_DESTRUCTIVE=1 to apply it anyway." >&2
+    exit 1
+  fi
 fi
 
 echo
