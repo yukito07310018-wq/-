@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 #
-# Pulls the production env from Vercel and applies pending Prisma migrations to
-# the production database, pausing to show which database is about to be
-# touched and what is still unapplied.
+# Applies pending Prisma migrations to the production database, refusing to
+# apply anything that can destroy existing rows without an explicit override.
 #
 #   bash scripts/migrateProduction.sh
+#
+# The connection string normally comes from `vercel env pull`. A variable marked
+# Sensitive in Vercel cannot be read back afterwards — the pull writes the
+# literal text "[SENSITIVE]" in place of the value — so for those, copy the
+# string from the database's own dashboard and pass it in directly:
+#
+#   DATABASE_URL='postgres://…' bash scripts/migrateProduction.sh
 #
 # Must run from a machine that can reach both Vercel and the database — the
 # sandboxed CI/agent environments have no outbound TCP on 5432.
@@ -14,8 +20,15 @@ cd "$(dirname "$0")/.."
 
 ENV_FILE=".env.production"
 
-echo "==> Pulling production environment from Vercel"
-vercel env pull "$ENV_FILE" --environment=production
+# Prisma Postgres hands out prisma+postgres:// rather than a bare postgres://
+# host, and the migrate engine connects through it, so treat it as usable
+# instead of holding out for a direct URL that may not exist.
+usable_url() {
+  case "$1" in
+    postgres://*|postgresql://*|prisma+postgres://*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 # Read one variable out of the pulled file without sourcing it; the file also
 # carries POSTGRES_URL and postgres_prisma_* aliases that would otherwise land
@@ -29,30 +42,49 @@ read_env() {
   printf '%s' "$value"
 }
 
-# Vercel's Prisma Postgres integration points DATABASE_URL at the Accelerate
-# proxy (prisma+postgres://), which the migration engine cannot open a
-# connection through. Fall back to whichever alias carries a direct
-# postgres:// URL so migrations run against the database itself.
-CANDIDATES="DATABASE_URL POSTGRES_URL_NON_POOLING DIRECT_DATABASE_URL POSTGRES_URL postgres_prisma_POSTGRES_URL postgres_prisma_DATABASE_URL"
-
-DATABASE_URL=""
 CHOSEN=""
-for name in $CANDIDATES; do
-  candidate="$(read_env "$name" || true)"
-  case "$candidate" in
-    postgres://*|postgresql://*)
+if [ -n "${DATABASE_URL:-}" ]; then
+  # An explicitly supplied URL wins; it is the escape hatch for Sensitive
+  # variables, so pulling from Vercel here would only overwrite it.
+  if ! usable_url "$DATABASE_URL"; then
+    echo "DATABASE_URL is set but is not a postgres:// or prisma+postgres:// URL." >&2
+    exit 1
+  fi
+  echo "==> Using DATABASE_URL from the environment"
+  CHOSEN="the environment"
+else
+  echo "==> Pulling production environment from Vercel"
+  vercel env pull "$ENV_FILE" --environment=production
+
+  CANDIDATES="DATABASE_URL POSTGRES_URL_NON_POOLING DIRECT_DATABASE_URL POSTGRES_URL postgres_prisma_POSTGRES_URL postgres_prisma_DATABASE_URL postgres_prisma_PRISMA_DATABASE_URL"
+  DATABASE_URL=""
+  for name in $CANDIDATES; do
+    candidate="$(read_env "$name" || true)"
+    if usable_url "$candidate"; then
       DATABASE_URL="$candidate"
       CHOSEN="$name"
       break
-      ;;
-  esac
-done
+    fi
+  done
+fi
 
-if [ -z "$DATABASE_URL" ]; then
+if [ -z "${DATABASE_URL:-}" ]; then
+  sensitive=""
+  grep -q '\[SENSITIVE\]' "$ENV_FILE" && sensitive=yes
   echo >&2
-  echo "No variable in $ENV_FILE holds a direct postgres:// connection string." >&2
+  echo "No variable in $ENV_FILE holds a usable connection string." >&2
+  if [ -n "$sensitive" ]; then
+    echo >&2
+    echo "At least one value came back as the literal text \"[SENSITIVE]\". Those" >&2
+    echo "variables are marked Sensitive in Vercel and cannot be read back — no" >&2
+    echo "amount of pulling will retrieve them. Copy the connection string from" >&2
+    echo "the database dashboard instead and re-run as:" >&2
+    echo >&2
+    echo "  DATABASE_URL='postgres://…' bash scripts/migrateProduction.sh" >&2
+  fi
+  echo >&2
   # Names and URL schemes are not secrets, so listing every variable is safe and
-  # says whether the file is malformed, empty, or simply has no direct URL.
+  # says whether the file is malformed, empty, or simply has no usable URL.
   echo "$ENV_FILE holds $(wc -l < "$ENV_FILE") lines, $(wc -c < "$ENV_FILE") bytes." >&2
   echo "Variables found (names and schemes only, values not shown):" >&2
   while IFS= read -r line || [ -n "$line" ]; do
@@ -64,9 +96,10 @@ if [ -z "$DATABASE_URL" ]; then
     value="${value%\"}"
     value="${value#\"}"
     case "$value" in
-      *://*) printf '  %s = %s://…\n' "$name" "${value%%://*}" >&2 ;;
-      '')    printf '  %s = (empty)\n' "$name" >&2 ;;
-      *)     printf '  %s = (not a URL)\n' "$name" >&2 ;;
+      *://*)         printf '  %s = %s://…\n' "$name" "${value%%://*}" >&2 ;;
+      '')            printf '  %s = (empty)\n' "$name" >&2 ;;
+      '[SENSITIVE]') printf '  %s = [SENSITIVE], unreadable\n' "$name" >&2 ;;
+      *)             printf '  %s = (not a URL)\n' "$name" >&2 ;;
     esac
   done < "$ENV_FILE"
   exit 1
