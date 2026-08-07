@@ -60,6 +60,7 @@ AIとの対話から、**100要素・10軸の個人モデル**を継続的に構
 │  POST /api/interview/message   1ターン処理（下記ループ）                   │
 │  GET  /api/profile/:id         結果用の読み取りモデル                      │
 │  DELETE /api/session/:id       全データのカスケード削除                    │
+│  GET  /api/health              設定と疎通の確認（§3）                      │
 └─────────────────────────────────────┬─────────────────────────────────────┘
                                       │
 ┌─────────────────────────────────────▼─────────────────────────────────────┐
@@ -127,8 +128,32 @@ DATABASE_URL="postgresql://..." npm run db:migrate
 追跡するため再実行しても安全です。`db:push` はスキーマを直接同期するもので、
 ローカルの試行錯誤用です。
 
-`verifyModelAccess()`（`src/lib/ai/client.ts`）でモデルへの疎通確認ができます。失敗時は
-モデル名と環境変数名を含む日本語メッセージを投げます。
+### 設定と疎通の確認: `GET /api/health`
+
+デプロイ先で**ブラウザで開くだけ**で、対話が根拠を出せる状態かどうかが分かります。
+
+```
+GET https://<your-app>/api/health          # モデルへの疎通確認まで行う
+GET https://<your-app>/api/health?probe=0  # 設定の確認のみ（上流を呼ばない）
+```
+
+| チェック | 落ちているときの意味 |
+|---|---|
+| `anthropic_api_key` | 未設定。Call Aが毎ターン失敗する |
+| `anthropic_reachable` | キーかモデルIDか接続の問題。**根拠0件の最有力原因** |
+| `database` | `DATABASE_URL` の問題 |
+| `element_model` | `data/elements.json` の破損 |
+| `turn_diagnostic_table` | 移行未適用。対話は動くが原因判定が効かない（`ok` は落とさない） |
+
+失敗時は `hint` に、その状態だと画面がどう見えるかを書きます。「根拠0件・情報不足」の
+原因がシステム側かどうかを、5ターン試さずに判定するためのものです。
+
+この中身は `verifyModelAccess()`（`src/lib/ai/client.ts`）です。§3の疎通確認として
+最初から用意されていましたが、**どこからも呼ばれていませんでした**。ループ内のLLM呼び出しは
+すべてfail-softなので、呼び出し口が無い限り障害は表に出ません。
+
+応答にAPIキーは含まれません。上流のエラー文言は `redact()` を通してから返します
+（このエンドポイントは認証がないため）。
 
 ### コマンド
 
@@ -435,7 +460,7 @@ trigram数が少なくあいまい照合が信用できないので、完全一�
 ## 10. テスト
 
 ```bash
-npm test     # 12ファイル / 121ケース
+npm test     # 13ファイル / 126ケース
 ```
 
 エンジンはすべて純粋関数なので、**テストはLLMを一度も呼びません**。Call A / Call B の応答は
@@ -446,6 +471,7 @@ npm test     # 12ファイル / 121ケース
 | `evidence.test.ts` | fixture→期待要素へのマッピング / 8件・6要素の上限 |
 | `quoteVerifier.test.ts` | 捏造引用の破棄 / 表記ゆれの許容 / 短い引用は完全一致のみ / 却下理由の集計 / 再実行トリガ |
 | `extractionHealth.test.ts` | 障害・捏造引用・薄い回答の判定 / 直近ウィンドウでの劣化検知 |
+| `health.test.ts` | `/api/health` の応答からAPIキーが除去されること |
 | `score.test.ts` | 上昇・下降・neutral不変 / 0-100 clamp / ±15上限 / 高Confidence時の減衰 |
 | `confidence.test.ts` | 同type大量→0.40頭打ち / 3type以上→0.85到達 / 矛盾ペナルティと復元 |
 | `diversity.test.ts` | 同type×3 < 5type混合 |
@@ -470,7 +496,7 @@ npm test     # 12ファイル / 121ケース
 
 | 項目 | 結果 |
 |---|---|
-| `npm test` | 12ファイル / 121ケース 全通過 |
+| `npm test` | 13ファイル / 126ケース 全通過 |
 | `npx tsc --noEmit` | エラーなし |
 | `npx eslint .` | エラー・警告なし |
 | `npm run build` | 成功（8ルート） |
@@ -481,6 +507,9 @@ npm test     # 12ファイル / 121ケース
 | `MOCK_MODE=ungrounded` 5ターン | 根拠0件・「引用の照合に失敗」表示・破棄30件（`not_grounded`） |
 | 会話画面の劣化表示 | outageで2ターン目から「読み取りが続けて失敗しています」を表示 |
 | `TurnDiagnostic` を DROP して5ターン | 500応答0件・根拠15件で完走。エラーはログに16件、画面は「診断データなし」に退化 |
+| `GET /api/health`（正常時） | 200・全チェックOK |
+| `GET /api/health`（上流到達不可） | 503・`anthropic_reachable` がNG・hintに「根拠は0件のまま」と表示・35文字のキーは応答に出ない |
+| `GET /api/health`（DB停止時） | 503・`database` がNGで接続先を提示 |
 | 矛盾 | 検出時に両Evidenceが保持され、関与要素のConfidenceが低下 |
 | 同時POST | 一方200・他方409 `SESSION_BUSY` |
 | 入力検証 | 空400 / 4000字超400 / 不正JSON400 / 未知セッション404 / 終了済み409 |
