@@ -15,7 +15,7 @@ import type {
 } from "../types/diagnosis";
 
 /**
- * The only place that knows SQLite stores arrays as JSON strings.
+ * The only place that knows arrays are stored as JSON strings.
  * Domain code above this layer sees real arrays and typed unions.
  */
 

@@ -109,16 +109,21 @@ npm run dev                 # http://localhost:3000
 ### Vercelへのデプロイ
 
 1. VercelプロジェクトのEnvironment Variablesに `DATABASE_URL` と `ANTHROPIC_API_KEY` を設定する
-2. 初回のみ、スキーマをDBへ反映する（ビルドはこれを行いません）
+2. スキーマをDBへ反映する（ビルドはこれを行いません）
 
 ```bash
-DATABASE_URL="postgresql://..." npm run db:push
+DATABASE_URL="postgresql://..." npm run db:migrate
 ```
 
 3. あとは通常どおりpushすればデプロイされる
 
-`npm run build` は `next build` のみです。ビルドがスキーマ変更を本番DBへ適用することは
-ないため、スキーマを変更したときは上記2をもう一度実行してください。
+`npm run build` は `next build` のみです。以前は `prisma db push --accept-data-loss` を
+含んでいましたが、デプロイのたびに本番DBへ破壊的にスキーマを適用してしまうため外しました。
+スキーマを変更したときは上記2を再実行してください。
+
+`db:migrate`（`prisma migrate deploy`）は適用済みの移行を `_prisma_migrations` で
+追跡するため再実行しても安全です。`db:push` はスキーマを直接同期するもので、
+ローカルの試行錯誤用です。
 
 `verifyModelAccess()`（`src/lib/ai/client.ts`）でモデルへの疎通確認ができます。失敗時は
 モデル名と環境変数名を含む日本語メッセージを投げます。
@@ -127,10 +132,14 @@ DATABASE_URL="postgresql://..." npm run db:push
 
 ```bash
 npm run dev        # 開発サーバー
-npm run build      # 本番ビルド
+npm run build      # 本番ビルド（next build のみ／DBには触れません）
 npm test           # Vitest（LLM非依存・ネットワーク不要）
 npm run typecheck  # tsc --noEmit
 npm run lint       # ESLint
+npm run db:migrate  # 移行を適用（本番向け・再実行安全）
+npm run db:push     # スキーマを直接同期（ローカル用）
+npm run db:push:dev # 同上・データ欠損を許容（ローカル専用。本番では使わない）
+npm run db:generate # Prisma Client を再生成
 node scripts/genElements.mjs         # data/*.json を再生成
 node scripts/inspectSession.mjs <id> # セッションの行数を確認
 ```
@@ -164,7 +173,8 @@ node scripts/smokeInterview.mjs      # start → 全ターン → profile を一
 | `QuestionHistory` | 出題履歴（類似質問の抑止に使用） |
 | `AxisSnapshot` | ターンごとの10軸スナップショット（飽和判定にも使用） |
 
-SQLiteに配列型はないため、配列はすべて**JSON文字列**で保持します。この変換は
+配列はすべて**JSON文字列**で保持します（配列型を持たないSQLite時代の名残で、
+PostgreSQL移行後もスキーマ互換のため維持）。この変換は
 `src/lib/db/repository.ts` に閉じ込めてあり、ドメイン層に `JSON.parse` は漏れません。
 `Session` の全子リレーションは `onDelete: Cascade` なので、`DELETE /api/session/:id`
 だけで会話・引用・履歴が完全に消えます。
@@ -469,7 +479,10 @@ nanoidの既定アルファベットは `-` と `_` を含みます。URLパス�
 
 **#9 Prisma 7 のアダプタ構成を採用**
 Prisma 7 では `datasource.url` をスキーマに書けなくなったため、接続URLを
-`prisma.config.ts` に置き、クライアントは `@prisma/adapter-better-sqlite3` 経由で接続します。
+`prisma.config.ts` に置き、クライアントは `@prisma/adapter-pg` 経由で接続します。
+`prisma generate` は接続を開かないので、`prisma.config.ts` は `DATABASE_URL` が
+未設定でも読み込めるようにしてあります（未設定のままinstallが失敗しないため）。
+クライアント生成は初回アクセスまで遅延させ、未設定時は変数名を明示して失敗します。
 
 **#10 `progress` の初期表示**
 `/api/interview/start` は常に `progress: 0` を返します（turn 0・Evidence 0のため
@@ -491,8 +504,9 @@ Prisma 7 では `datasource.url` をスキーマに書けなくなったため�
 - **`distress` 判定のためにLLMを1回追加で呼びます。** 判定に失敗した場合は `none` として
   会話を継続します（AI障害で会話を止めないため）。安全側に倒したい運用では、
   失敗時に会話を止める方針へ変更してください。
-- **SQLite前提。** 同時実行はセッション単位のフラグで直列化しています。
-  複数プロセスで動かす場合はPostgreSQLへの移行を推奨します。
+- **同時実行はセッション単位のフラグで直列化しています。** `acquireSessionLock` は
+  条件付きUPDATE1文なので、PostgreSQLの行ロックにより複数プロセス／インスタンスでも
+  二重取得は起きません。
 - **多言語対応なし。** UIとAIの発話は日本語のみです。
 - **相談窓口情報は 2026-08-01 時点のものです。** 公開前に必ず再確認してください。
 
