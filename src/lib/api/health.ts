@@ -237,11 +237,10 @@ async function checkDiagnosticTable(): Promise<HealthCheck> {
         ok: false,
         detail: "TurnDiagnostic が存在しません（対話は動きますが原因判定は効きません）",
         remedy: [
-          `${VERCEL_ENV_PATH} で DATABASE_URL の値をコピーする`,
-          "このリポジトリを手元に clone し、npm install を実行する",
-          '次を実行する: DATABASE_URL="<コピーした値>" npm run db:migrate',
-          "既存データは変更されず、複数回実行しても安全です（適用済みの移行は飛ばされます）",
-          "再デプロイは不要。このページを再読み込みして緑になることを確認する",
+          `${REDEPLOY_NOTE.replace("（環境変数の変更は再デプロイしないと反映されません）", "（ビルド時に未適用の移行が自動で適用されます）")}`,
+          "このページを再読み込みして、この項目が緑になることを確認する",
+          "自動適用が効かない場合（ビルダーからDBに到達できないなど）は、DATABASE_URL を手元にコピーして npm run db:migrate を実行する",
+          "いずれの方法でも既存データは変更されず、複数回実行しても安全です",
         ],
       };
     }

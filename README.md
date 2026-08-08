@@ -112,21 +112,31 @@ npm run dev                 # http://localhost:3000
 ### Vercelへのデプロイ
 
 1. VercelプロジェクトのEnvironment Variablesに `DATABASE_URL` と `ANTHROPIC_API_KEY` を設定する
-2. スキーマをDBへ反映する（ビルドはこれを行いません）
+2. push するだけです。**未適用の移行はビルド時に自動で適用されます**
 
-```bash
-DATABASE_URL="postgresql://..." npm run db:migrate
+```
+npm run build
+  → node scripts/buildMigrate.mjs   # prisma migrate deploy（失敗しても続行）
+  → next build
 ```
 
-3. あとは通常どおりpushすればデプロイされる
+`prisma db push --accept-data-loss` は以前ビルドに入っていて、デプロイのたびに本番DBへ
+破壊的にスキーマを適用していたため外されました。**その判断は正しく、ここでも維持しています。**
+いま走るのは `prisma migrate deploy` で、性質がまったく違います。
 
-`npm run build` は `next build` のみです。以前は `prisma db push --accept-data-loss` を
-含んでいましたが、デプロイのたびに本番DBへ破壊的にスキーマを適用してしまうため外しました。
-スキーマを変更したときは上記2を再実行してください。
+| | `db push --accept-data-loss` | `migrate deploy` |
+|---|---|---|
+| 既存データ | **破棄しうる** | 変更しない |
+| 適用済みの追跡 | しない（毎回同期） | `_prisma_migrations` で追跡 |
+| 再実行 | 毎回スキーマを上書き | 適用済みは飛ばす |
 
-`db:migrate`（`prisma migrate deploy`）は適用済みの移行を `_prisma_migrations` で
-追跡するため再実行しても安全です。`db:push` はスキーマを直接同期するもので、
-ローカルの試行錯誤用です。
+`scripts/buildMigrate.mjs` は**失敗してもビルドを止めません**。`DATABASE_URL` が
+ビルド時に無い場合、DBがビルダーから到達できない場合も、ビルドは完走してアプリは動きます。
+デプロイがDBの可用性に依存してはならないためです。適用できたかどうかは `/api/health` で
+確認できます。
+
+手動で適用したいときは `npm run db:migrate` がそのまま使えます（再実行安全）。
+`db:push` はスキーマを直接同期するもので、ローカルの試行錯誤用です。
 
 ### 設定と疎通の確認: `GET /api/health`
 
@@ -192,7 +202,7 @@ GET https://<your-app>/api/health?probe=0      # 設定の確認のみ（上流�
 
 ```bash
 npm run dev        # 開発サーバー
-npm run build      # 本番ビルド（next build のみ／DBには触れません）
+npm run build      # 本番ビルド（未適用の移行を適用してから next build。移行失敗でも続行）
 npm test           # Vitest（LLM非依存・ネットワーク不要）
 npm run typecheck  # tsc --noEmit
 npm run lint       # ESLint
@@ -591,6 +601,8 @@ npm test     # 14ファイル / 146ケース
 | `GET /api/health`（上流が404） | 「HTTP 404 — ANTHROPIC_MODEL のモデルIDが存在しません」と表示 |
 | `/api/health` をブラウザで表示 | HTMLの手順ページを返す（401は4手順・404は3手順）。`?format=json` はJSONのまま |
 | 診断テーブルだけ無い状態 | 200・緑の判定のまま、手順は「任意: 原因の記録を有効にする」として破線枠で表示 |
+| ビルド時の自動移行 | テーブルを落とした状態で `npm run build` → 移行が適用され、ビルドも成功 |
+| 同・`DATABASE_URL` 無し / DB到達不可 | どちらもスキップして続行し、ビルドは成功（exit 0） |
 | 結果画面の文面（利用者向け） | 「あなたの回答に問題があったわけではありません」。環境変数名は出ない |
 | `GET /api/health`（DB停止時） | 503・`database` がNGでエラークラスのみ提示（接続文字列や内部ホスト名は出さない） |
 | 12ターン×2回（修正前/後） | カバー率0%の軸が **4/10 → 0/10**。全10軸に根拠が分散 |
