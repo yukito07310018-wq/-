@@ -91,20 +91,66 @@ export async function getSession(sessionId: string): Promise<SessionRecord | nul
 }
 
 /**
+ * How long a processing lock may be held before it is treated as abandoned.
+ *
+ * Must exceed the message route's `maxDuration` (120s) so a lock is never taken
+ * from a request that is still running — a live turn cannot outlive the
+ * function that holds it.
+ */
+export const LOCK_STALE_MS = 180_000;
+
+/** True when a held lock is old enough that no live request can still own it. */
+export function isLockStale(
+  processing: boolean,
+  processingSince: Date | null,
+  now: Date = new Date()
+): boolean {
+  if (!processing) return false;
+  // A lock with no timestamp predates this column; age it out rather than
+  // stranding the session forever.
+  if (!processingSince) return true;
+  return now.getTime() - processingSince.getTime() >= LOCK_STALE_MS;
+}
+
+/**
  * Claims the session for processing (§24 idempotency).
+ *
  * Returns false when another request already holds it — the conditional update
  * makes this atomic, so two concurrent POSTs cannot both win.
+ *
+ * A lock older than LOCK_STALE_MS is reclaimed. Without that, a function killed
+ * at its maxDuration left `processing` set with no `finally` to clear it, and
+ * every later message on that session answered SESSION_BUSY forever: the
+ * interview was unrecoverable and the only way out was starting over.
  */
 export async function acquireSessionLock(sessionId: string): Promise<boolean> {
+  const staleBefore = new Date(Date.now() - LOCK_STALE_MS);
+
   const result = await prisma.session.updateMany({
-    where: { id: sessionId, processing: false },
-    data: { processing: true },
+    where: {
+      id: sessionId,
+      OR: [
+        { processing: false },
+        { processing: true, processingSince: null },
+        { processing: true, processingSince: { lte: staleBefore } },
+      ],
+    },
+    data: { processing: true, processingSince: new Date() },
   });
-  return result.count === 1;
+
+  if (result.count === 1) return true;
+
+  // Not an error — a concurrent request holds it — but a lock that keeps being
+  // reclaimed points at turns outliving the function, so make it visible.
+  console.warn(`[repository] session ${sessionId} is already processing`);
+  return false;
 }
 
 export async function releaseSessionLock(sessionId: string): Promise<void> {
-  await prisma.session.updateMany({ where: { id: sessionId }, data: { processing: false } });
+  await prisma.session.updateMany({
+    where: { id: sessionId },
+    data: { processing: false, processingSince: null },
+  });
 }
 
 export async function setSessionStatus(

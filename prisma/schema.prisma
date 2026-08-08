@@ -22,8 +22,12 @@ model Session {
   id             String   @id // nanoid(21) — unguessable, acts as the access token (§25)
   userId         String?
   user           User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  status         String   @default("active") // active | completed | aborted
-  processing     Boolean  @default(false)
+  status         String    @default("active") // active | completed | aborted
+  processing     Boolean   @default(false)
+  // When the processing lock was taken. A serverless function killed at its
+  // maxDuration never runs its `finally`, so without an age the lock would
+  // stay set forever and the session could never be continued (§24).
+  processingSince DateTime?
   turnCount      Int      @default(0)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt

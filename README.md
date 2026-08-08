@@ -249,7 +249,7 @@ curl -X POST --data outage http://127.0.0.1:8787/__mock/mode
 | モデル | 役割 |
 |---|---|
 | `User` | 任意。現状セッションは匿名 |
-| `Session` | `id` は nanoid(21)。`status` (active/completed/aborted)、`processing`（重複POST防止）、`turnCount` |
+| `Session` | `id` は nanoid(21)。`status` (active/completed/aborted)、`processing` と `processingSince`（重複POST防止・下記）、`turnCount` |
 | `ConversationTurn` | 発話ログ。`(sessionId, turnIndex, role)` で一意 |
 | `ElementState` | 100要素×セッション。score / confidence / evidenceCount / evidenceDiversity / evidenceTypes |
 | `Evidence` | 引用・type・strength・reliability・direction・context |
@@ -263,6 +263,23 @@ curl -X POST --data outage http://127.0.0.1:8787/__mock/mode
 握りつぶし、失敗しても対話は止めません。移行は手動運用（`npm run db:migrate`）なので
 移行前のコードがデプロイされうるためで、原因を説明するための仕組みが原因不明の全断を
 起こしては本末転倒だからです。テーブルが無い場合は「診断データなし」に退化します。
+
+#### 処理ロックには期限がある
+
+同一セッションへの同時POSTは `processing` フラグの条件付きUPDATEで1つに絞ります。解放は
+Route Handler の `finally` で行いますが、**サーバーレス関数が `maxDuration`（120秒）で
+殺されると `finally` は走りません。**
+
+期限が無かったとき、それは「`processing=true` が永久に残り、以降そのセッションへの
+全メッセージが409 `SESSION_BUSY` を返す」ことを意味していました。**復旧手段が無く、
+利用者は診断をやり直すしかありません。**
+
+`processingSince` を持たせ、**3分**を超えた保持は放棄されたものとして再取得します。
+稼働中の要求からロックを奪わないよう、閾値は関数の寿命（120秒）より長くしてあります。
+この列が無い時代のセッション（`processingSince = NULL`）も再取得の対象です。放置すると
+永久に閉じ込められるためです。
+
+判定は `isLockStale()`（純粋関数）にあり、`tests/sessionLock.test.ts` で検証しています。
 
 配列はすべて**JSON文字列**で保持します（配列型を持たないSQLite時代の名残で、
 PostgreSQL移行後もスキーマ互換のため維持）。この変換は
@@ -547,7 +564,7 @@ trigram数が少なくあいまい照合が信用できないので、完全一�
 ## 10. テスト
 
 ```bash
-npm test     # 14ファイル / 146ケース
+npm test     # 15ファイル / 152ケース
 ```
 
 エンジンはすべて純粋関数なので、**テストはLLMを一度も呼びません**。Call A / Call B の応答は
@@ -566,6 +583,7 @@ npm test     # 14ファイル / 146ケース
 | `contradiction.test.ts` | 方向対立の検出 / 両Evidence保持 / Confidence低下 / 解消判定 |
 | `aggregation.test.ts` | **全confidence=0でもNaNにならず50** / coverage |
 | `questionSelection.test.ts` | 低Confidence狙いが最高QValue / 矛盾関与がC項で優先 / フォールバック |
+| `sessionLock.test.ts` | 稼働中のロックは奪わない / 期限切れと時刻なしは再取得 / 閾値が maxDuration より長い |
 | `similarity.test.ts` | 同一文=1.0 / 無関係=低値 / 0.75超の除外 |
 | `injection.test.ts` | 注入入力でスコアが壊れない |
 | `termination.test.ts` | 10ターン未満は継続 / 30ターン強制終了 / 飽和判定 |
@@ -584,7 +602,7 @@ npm test     # 14ファイル / 146ケース
 
 | 項目 | 結果 |
 |---|---|
-| `npm test` | 14ファイル / 146ケース 全通過 |
+| `npm test` | 15ファイル / 152ケース 全通過 |
 | `npx tsc --noEmit` | エラーなし |
 | `npx eslint .` | エラー・警告なし |
 | `npm run build` | 成功（8ルート） |
@@ -609,6 +627,7 @@ npm test     # 14ファイル / 146ケース
 | 劣化警告のタイミング | 1ターン目は警告なし、2ターン目から表示（`.!!!!`） |
 | 矛盾 | 検出時に両Evidenceが保持され、関与要素のConfidenceが低下 |
 | 同時POST | 一方200・他方409 `SESSION_BUSY` |
+| ロックを残したまま放置（関数が殺された想定） | 取得直後は409のまま／3分経過後と旧データ（時刻なし）は復帰して200 |
 | 入力検証 | 空400 / 4000字超400 / 不正JSON400 / 未知セッション404 / 終了済み409 |
 | crisis分岐 | Evidence 0件・turn 0・`status=aborted`・結果URLなし・以降409 |
 | distress分岐 | Evidenceは抽出しつつ `failure`/`conflict` を除外 |
