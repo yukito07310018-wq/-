@@ -22,8 +22,12 @@ model Session {
   id             String   @id // nanoid(21) — unguessable, acts as the access token (§25)
   userId         String?
   user           User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  status         String   @default("active") // active | completed | aborted
-  processing     Boolean  @default(false)
+  status         String    @default("active") // active | completed | aborted
+  processing     Boolean   @default(false)
+  // When the processing lock was taken. A serverless function killed at its
+  // maxDuration never runs its `finally`, so without an age the lock would
+  // stay set forever and the session could never be continued (§24).
+  processingSince DateTime?
   turnCount      Int      @default(0)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -34,8 +38,32 @@ model Session {
   contradictions Contradiction[]
   questions      QuestionHistory[]
   snapshots      AxisSnapshot[]
+  diagnostics    TurnDiagnostic[]
 
   @@index([status])
+}
+
+// Why a turn produced the evidence it did. Every LLM call in the loop is
+// fail-soft, so without this an outage and a genuinely uninformative answer are
+// indistinguishable after the fact — both just leave zero evidence behind.
+model TurnDiagnostic {
+  id              String   @id @default(cuid())
+  sessionId       String
+  session         Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  turn            Int
+  analystOk       Boolean  @default(true)
+  analystError    String? // error name when Call A failed outright
+  extracted       Int      @default(0) // items the model emitted
+  accepted        Int      @default(0) // items that survived quote verification
+  rejected        Int      @default(0)
+  rejectedReasons String   @default("{}") // JSON object keyed by rejection reason
+  repaired        Boolean  @default(false)
+  droppedByLimits Int      @default(0)
+  questionSource  String   @default("none") // llm | fallback | exhausted | none
+  createdAt       DateTime @default(now())
+
+  @@unique([sessionId, turn])
+  @@index([sessionId])
 }
 
 model ConversationTurn {

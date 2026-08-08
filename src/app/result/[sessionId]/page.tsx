@@ -5,6 +5,7 @@ import ContradictionPanel from "@/components/ContradictionPanel";
 import DiagnosisSummary from "@/components/DiagnosisSummary";
 import ElementInsight from "@/components/ElementInsight";
 import EvidencePanel from "@/components/EvidencePanel";
+import ExtractionHealthNotice from "@/components/ExtractionHealthNotice";
 import { buildProfile } from "@/lib/interview/profileService";
 import { ELEMENTS } from "@/lib/model/elements";
 
@@ -33,6 +34,8 @@ export default async function ResultPage({
         turn={profile.turn}
         evidenceCount={profile.evidence.length}
       />
+
+      <ExtractionHealthNotice health={profile.extraction_health} />
 
       <section className="rounded-xl border border-[color:var(--border)] bg-[color:var(--surface)] p-5">
         <h2 className="text-lg font-semibold">10軸の傾向</h2>

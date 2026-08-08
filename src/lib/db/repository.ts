@@ -91,20 +91,66 @@ export async function getSession(sessionId: string): Promise<SessionRecord | nul
 }
 
 /**
+ * How long a processing lock may be held before it is treated as abandoned.
+ *
+ * Must exceed the message route's `maxDuration` (120s) so a lock is never taken
+ * from a request that is still running — a live turn cannot outlive the
+ * function that holds it.
+ */
+export const LOCK_STALE_MS = 180_000;
+
+/** True when a held lock is old enough that no live request can still own it. */
+export function isLockStale(
+  processing: boolean,
+  processingSince: Date | null,
+  now: Date = new Date()
+): boolean {
+  if (!processing) return false;
+  // A lock with no timestamp predates this column; age it out rather than
+  // stranding the session forever.
+  if (!processingSince) return true;
+  return now.getTime() - processingSince.getTime() >= LOCK_STALE_MS;
+}
+
+/**
  * Claims the session for processing (§24 idempotency).
+ *
  * Returns false when another request already holds it — the conditional update
  * makes this atomic, so two concurrent POSTs cannot both win.
+ *
+ * A lock older than LOCK_STALE_MS is reclaimed. Without that, a function killed
+ * at its maxDuration left `processing` set with no `finally` to clear it, and
+ * every later message on that session answered SESSION_BUSY forever: the
+ * interview was unrecoverable and the only way out was starting over.
  */
 export async function acquireSessionLock(sessionId: string): Promise<boolean> {
+  const staleBefore = new Date(Date.now() - LOCK_STALE_MS);
+
   const result = await prisma.session.updateMany({
-    where: { id: sessionId, processing: false },
-    data: { processing: true },
+    where: {
+      id: sessionId,
+      OR: [
+        { processing: false },
+        { processing: true, processingSince: null },
+        { processing: true, processingSince: { lte: staleBefore } },
+      ],
+    },
+    data: { processing: true, processingSince: new Date() },
   });
-  return result.count === 1;
+
+  if (result.count === 1) return true;
+
+  // Not an error — a concurrent request holds it — but a lock that keeps being
+  // reclaimed points at turns outliving the function, so make it visible.
+  console.warn(`[repository] session ${sessionId} is already processing`);
+  return false;
 }
 
 export async function releaseSessionLock(sessionId: string): Promise<void> {
-  await prisma.session.updateMany({ where: { id: sessionId }, data: { processing: false } });
+  await prisma.session.updateMany({
+    where: { id: sessionId },
+    data: { processing: false, processingSince: null },
+  });
 }
 
 export async function setSessionStatus(
@@ -203,6 +249,75 @@ export async function loadAskedQuestions(sessionId: string): Promise<AskedQuesti
   }));
 }
 
+export interface TurnDiagnosticRecord {
+  turn: number;
+  analystOk: boolean;
+  analystError: string | null;
+  extracted: number;
+  accepted: number;
+  rejected: number;
+  rejectedReasons: Record<string, number>;
+  repaired: boolean;
+  droppedByLimits: number;
+  questionSource: QuestionSource;
+}
+
+/** Where the next question came from — "none" when the turn ended the interview. */
+export type QuestionSource = "llm" | "fallback" | "exhausted" | "none";
+
+function parseCountMap(raw: string): Record<string, number> {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function asQuestionSource(value: string): QuestionSource {
+  return value === "fallback" || value === "exhausted" || value === "llm" ? value : "none";
+}
+
+/**
+ * TurnDiagnostic is the one table the app treats as optional.
+ *
+ * It records why a turn produced the evidence it did — useful, but never worth
+ * an interview. Migrations here are applied by hand (`npm run db:migrate`, kept
+ * out of the build on purpose), so a deploy can land ahead of its migration; if
+ * that took down every turn, this diagnostic would cause worse outages than the
+ * ones it exists to explain. Both directions therefore degrade to "no data".
+ */
+export async function loadTurnDiagnostics(sessionId: string): Promise<TurnDiagnosticRecord[]> {
+  let rows;
+  try {
+    rows = await prisma.turnDiagnostic.findMany({
+      where: { sessionId },
+      orderBy: { turn: "asc" },
+    });
+  } catch (error) {
+    console.error("[repository] failed to load turn diagnostics:", error);
+    return [];
+  }
+
+  return rows.map((r) => ({
+    turn: r.turn,
+    analystOk: r.analystOk,
+    analystError: r.analystError,
+    extracted: r.extracted,
+    accepted: r.accepted,
+    rejected: r.rejected,
+    rejectedReasons: parseCountMap(r.rejectedReasons),
+    repaired: r.repaired,
+    droppedByLimits: r.droppedByLimits,
+    questionSource: asQuestionSource(r.questionSource),
+  }));
+}
+
 export interface ConversationMessage {
   turnIndex: number;
   role: "user" | "assistant";
@@ -286,6 +401,9 @@ export interface PersistTurnInput {
   resolutions: { contradiction_id: string; resolution_note: string }[];
   axes: AxisAggregate[];
 }
+
+/** Why a turn produced the evidence it did, minus the fields filled in later. */
+export type TurnDiagnosticInput = Omit<TurnDiagnosticRecord, "turn" | "questionSource">;
 
 /**
  * Persists one turn's model update atomically.
@@ -385,4 +503,51 @@ export async function persistTurn(input: PersistTurnInput): Promise<void> {
 
     await tx.session.update({ where: { id: sessionId }, data: { turnCount: turn } });
   });
+}
+
+/**
+ * Records why a turn extracted what it did. Non-fatal by design — see
+ * loadTurnDiagnostics for why this table must not be able to fail a turn.
+ */
+export async function saveTurnDiagnostic(
+  sessionId: string,
+  turn: number,
+  d: TurnDiagnosticInput
+): Promise<void> {
+  const fields = {
+    analystOk: d.analystOk,
+    analystError: d.analystError,
+    extracted: d.extracted,
+    accepted: d.accepted,
+    rejected: d.rejected,
+    rejectedReasons: JSON.stringify(d.rejectedReasons),
+    repaired: d.repaired,
+    droppedByLimits: d.droppedByLimits,
+  };
+
+  try {
+    await prisma.turnDiagnostic.upsert({
+      where: { sessionId_turn: { sessionId, turn } },
+      create: { sessionId, turn, ...fields },
+      update: fields,
+    });
+  } catch (error) {
+    console.error("[repository] failed to save turn diagnostic:", error);
+  }
+}
+
+/** Records where the next question came from, once it is known. Non-fatal. */
+export async function recordQuestionSource(
+  sessionId: string,
+  turn: number,
+  source: QuestionSource
+): Promise<void> {
+  try {
+    await prisma.turnDiagnostic.updateMany({
+      where: { sessionId, turn },
+      data: { questionSource: source },
+    });
+  } catch (error) {
+    console.error("[repository] failed to record question source:", error);
+  }
 }

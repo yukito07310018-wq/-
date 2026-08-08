@@ -37,6 +37,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       is_complete: outcome.isComplete,
       result_url: outcome.resultUrl,
       aborted: outcome.aborted,
+      extraction_degraded: outcome.extractionDegraded,
     });
   } catch (error) {
     return toApiError(error, "interview/message");

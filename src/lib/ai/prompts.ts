@@ -1,5 +1,5 @@
-import { axisNameOf } from "../model/axes";
-import { ELEMENTS, getElement, neighbourhoodOf } from "../model/elements";
+import { AXES, axisNameOf } from "../model/axes";
+import { getElement, neighbourhoodOf } from "../model/elements";
 import type {
   AskedQuestion,
   Contradiction,
@@ -19,6 +19,8 @@ import type { ConversationMessage } from "../db/repository";
  */
 
 export const MAX_PROFILE_ELEMENTS = 35;
+/** Candidates every axis is guaranteed, regardless of how confidence sorts. */
+export const MIN_ELEMENTS_PER_AXIS = 2;
 export const RECENT_TURNS = 6;
 export const RECENT_EVIDENCE = 10;
 export const MAX_CONTEXT_CONTRADICTIONS = 5;
@@ -37,7 +39,8 @@ The application computes all numeric state deterministically.
 
 Every extracted evidence item must quote the user's actual words verbatim.
 Do not fabricate, paraphrase, or reconstruct quotations.
-A quote must be a contiguous span copied from the user's answer, 10-120 characters long.
+A quote must be a contiguous span copied from the user's answer, 6-120 characters long.
+Copy it exactly: spans shorter than 10 characters are accepted only on an exact match.
 If no meaningful evidence is present in the answer, return an empty array.
 Returning fewer, well-grounded items is strictly better than many weak ones.
 Extract at most 8 evidence items covering at most 6 elements.
@@ -142,9 +145,18 @@ export interface ProfileContext {
 }
 
 /**
- * §37 — picks at most 35 elements worth sending: the least certain, whatever
- * was just touched (plus its neighbourhood), and anything caught in an
- * unresolved contradiction.
+ * §37 — picks at most 35 elements worth sending: a guaranteed share of every
+ * axis, whatever was just touched (plus its neighbourhood), and anything caught
+ * in an unresolved contradiction.
+ *
+ * The per-axis guarantee is what makes the rest work. Ranking all 100 elements
+ * by confidence and taking the first 20 reads as "ask about what we know
+ * least", but on turn 1 every confidence is 0, so the id tie-break decides —
+ * and ids run in axis order, so it hands back E001-E020: the first two axes,
+ * every time. An answer about anything else then has no element to attach to,
+ * the model correctly returns nothing, and the turn looks exactly like a thin
+ * answer. Measured over 12 turns, four axes never received a single piece of
+ * evidence despite the answers plainly containing material for them.
  */
 export function selectContextElements(ctx: ProfileContext): string[] {
   const selected: string[] = [];
@@ -154,11 +166,21 @@ export function selectContextElements(ctx: ProfileContext): string[] {
     }
   };
 
-  const byConfidence = [...ELEMENTS]
-    .map((e) => ({ id: e.element_id, confidence: ctx.states.get(e.element_id)?.confidence ?? 0 }))
-    .sort((a, b) => a.confidence - b.confidence || a.id.localeCompare(b.id));
-  for (const { id } of byConfidence.slice(0, 20)) add(id);
+  const confidenceOf = (id: string) => ctx.states.get(id)?.confidence ?? 0;
+  // Ties break on id so selection stays deterministic (§2.1).
+  const leastCertainFirst = (ids: readonly string[]) =>
+    [...ids].sort((a, b) => confidenceOf(a) - confidenceOf(b) || a.localeCompare(b));
 
+  const perAxisQueues = AXES.map((axis) => leastCertainFirst(axis.element_ids));
+
+  // 1. Every axis, least certain first.
+  for (let rank = 0; rank < MIN_ELEMENTS_PER_AXIS; rank++) {
+    for (const queue of perAxisQueues) {
+      if (queue[rank]) add(queue[rank]);
+    }
+  }
+
+  // 2. Whatever was just touched, plus its neighbourhood.
   const neighbours: string[] = [];
   for (const id of ctx.recentlyUpdated) {
     neighbours.push(id);
@@ -166,11 +188,22 @@ export function selectContextElements(ctx: ProfileContext): string[] {
   }
   for (const id of neighbours.slice(0, 10)) add(id);
 
+  // 3. Anything caught in an unresolved contradiction.
   const inContradiction = ctx.contradictions
     .filter((c) => c.status === "unresolved")
     .flatMap((c) => c.elements)
     .slice(0, 5);
   for (const id of inContradiction) add(id);
+
+  // 4. Spend what is left round-robin, so the spare budget stays spread out
+  //    instead of deepening whichever axis happens to sort first.
+  const deepestQueue = Math.max(...perAxisQueues.map((q) => q.length));
+  for (let rank = MIN_ELEMENTS_PER_AXIS; rank < deepestQueue; rank++) {
+    if (selected.length >= MAX_PROFILE_ELEMENTS) break;
+    for (const queue of perAxisQueues) {
+      if (queue[rank]) add(queue[rank]);
+    }
+  }
 
   return selected;
 }

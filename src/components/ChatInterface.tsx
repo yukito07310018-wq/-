@@ -26,6 +26,7 @@ interface MessageResponse {
   is_complete: boolean;
   result_url: string | null;
   aborted?: boolean;
+  extraction_degraded?: boolean;
   error?: { code: string; message: string };
 }
 
@@ -40,6 +41,7 @@ export default function ChatInterface() {
   const [starting, setStarting] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [aborted, setAborted] = useState(false);
+  const [degraded, setDegraded] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
@@ -96,6 +98,7 @@ export default function ChatInterface() {
       setMessages((prev) => [...prev, { role: "ai", content: data.reply }]);
       setTurn(data.turn);
       setProgress(data.progress);
+      setDegraded(Boolean(data.extraction_degraded));
 
       if (data.aborted) {
         setAborted(true);
@@ -158,6 +161,18 @@ export default function ChatInterface() {
       {error && (
         <p className="mt-3 shrink-0 rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-sm text-red-200">
           {error}
+        </p>
+      )}
+
+      {/*
+        §29 keeps the model hidden during the interview, and this stays on the
+        right side of that line: it reports that the reading step is failing,
+        never what was read. Staying silent here is what let a broken pipeline
+        look like a normal conversation.
+      */}
+      {degraded && !aborted && (
+        <p className="mt-3 shrink-0 rounded-lg border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-sm text-amber-200">
+          システム側で読み取りが続けて失敗しています。あなたの回答の問題ではありません。このまま会話は続けられますが、結果に反映されない可能性があります。
         </p>
       )}
 

@@ -1,7 +1,8 @@
-import { runAnalystCall } from "../ai/analystCall";
+import { emptyAnalystResult, runAnalystCall, type AnalystResult } from "../ai/analystCall";
 import { runInterviewerCall, runReplyCall } from "../ai/interviewerCall";
 import { selectContextElements } from "../ai/prompts";
 import { aggregateAxes, diagnosisConfidence, overallCoverage } from "../engine/aggregation";
+import { assessExtraction } from "../engine/extractionHealth";
 import { pickFallbackQuestion } from "../engine/fallbackQuestions";
 import { computeProgress } from "../engine/progress";
 import { selectQuestion } from "../engine/questionSelector";
@@ -26,6 +27,8 @@ export interface TurnOutcome {
   isComplete: boolean;
   resultUrl: string | null;
   aborted: boolean;
+  /** True when recent turns are producing no evidence — a system problem, not a result. */
+  extractionDegraded: boolean;
 }
 
 export async function processTurn(sessionId: string, message: string): Promise<TurnOutcome> {
@@ -34,15 +37,23 @@ export async function processTurn(sessionId: string, message: string): Promise<T
 
   const turn = session.turnCount + 1;
 
-  const [states, priorEvidence, priorContradictions, askedQuestions, conversation, confidenceHistory] =
-    await Promise.all([
-      repo.loadElementStates(sessionId),
-      repo.loadEvidence(sessionId),
-      repo.loadContradictions(sessionId),
-      repo.loadAskedQuestions(sessionId),
-      repo.loadConversation(sessionId),
-      repo.loadMeanConfidenceHistory(sessionId),
-    ]);
+  const [
+    states,
+    priorEvidence,
+    priorContradictions,
+    askedQuestions,
+    conversation,
+    confidenceHistory,
+    priorDiagnostics,
+  ] = await Promise.all([
+    repo.loadElementStates(sessionId),
+    repo.loadEvidence(sessionId),
+    repo.loadContradictions(sessionId),
+    repo.loadAskedQuestions(sessionId),
+    repo.loadConversation(sessionId),
+    repo.loadMeanConfidenceHistory(sessionId),
+    repo.loadTurnDiagnostics(sessionId),
+  ]);
 
   await repo.saveConversationTurn(sessionId, turn, "user", message);
 
@@ -63,6 +74,8 @@ export async function processTurn(sessionId: string, message: string): Promise<T
       isComplete: false,
       resultUrl: null,
       aborted: true,
+      // The turn stopped before extraction ran, so there is nothing to report on.
+      extractionDegraded: false,
     };
   }
 
@@ -72,7 +85,8 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     .map((s) => s.element_id);
 
   // --- Call A: evidence extraction (§22-3) ----------------------------------
-  let analyst;
+  let analyst: AnalystResult;
+  let analystError: string | null = null;
   try {
     analyst = await runAnalystCall({
       question: lastQuestion,
@@ -88,8 +102,10 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     });
   } catch (error) {
     // §36 failure handling: a failed extraction must not stop the conversation.
+    // It must not vanish either — the reason is recorded on the turn below.
     console.error("[turnService] analyst call failed, continuing with zero evidence:", error);
-    analyst = { evidence: [], contradictionCandidates: [], rejectedCount: 0, repaired: false };
+    analyst = emptyAnalystResult();
+    analystError = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
   }
 
   // --- deterministic model update (§22-4〜9) --------------------------------
@@ -104,6 +120,17 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     makeContradictionId: (i) => `cx-${turn}-${i}`,
   });
 
+  const diagnostic = {
+    analystOk: analystError === null,
+    analystError,
+    extracted: analyst.extractedCount,
+    accepted: update.newEvidence.length,
+    rejected: analyst.rejectedCount,
+    rejectedReasons: analyst.rejectionCounts,
+    repaired: analyst.repaired,
+    droppedByLimits: update.droppedByLimits,
+  };
+
   await repo.persistTurn({
     sessionId,
     turn,
@@ -113,6 +140,17 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     resolutions: update.resolutions,
     axes: update.axes,
   });
+
+  // After the turn is committed, never as part of it: a diagnostic that cannot
+  // be written is a lost log line, not a reason to fail the interview.
+  await repo.saveTurnDiagnostic(sessionId, turn, diagnostic);
+
+  // §29 keeps scores off the interview screen, but a broken pipeline is not a
+  // score — leaving it hidden is what let five turns produce nothing in silence.
+  const health = assessExtraction([
+    ...priorDiagnostics,
+    { turn, questionSource: "none" as const, ...diagnostic },
+  ]);
 
   const progress = computeProgress({
     turn,
@@ -133,7 +171,16 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     const reply = buildCompletionReply(termination.reason === "max_turns");
     await repo.saveConversationTurn(sessionId, turn, "assistant", reply);
     await repo.setSessionStatus(sessionId, "completed");
-    return { reply, turn, progress, isComplete: true, resultUrl: `/result/${sessionId}`, aborted: false };
+    await repo.recordQuestionSource(sessionId, turn, "none");
+    return {
+      reply,
+      turn,
+      progress,
+      isComplete: true,
+      resultUrl: `/result/${sessionId}`,
+      aborted: false,
+      extractionDegraded: health.degraded,
+    };
   }
 
   // --- Call B + selection (§22-12〜14) --------------------------------------
@@ -169,8 +216,17 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     probe_kind: nextQuestion.question.probe_kind,
     q_value: nextQuestion.qValue,
   });
+  await repo.recordQuestionSource(sessionId, turn, nextQuestion.source);
 
-  return { reply, turn, progress, isComplete: false, resultUrl: null, aborted: false };
+  return {
+    reply,
+    turn,
+    progress,
+    isComplete: false,
+    resultUrl: null,
+    aborted: false,
+    extractionDegraded: health.degraded,
+  };
 }
 
 interface ChooseQuestionInput {
@@ -190,7 +246,7 @@ interface ChooseQuestionInput {
  */
 async function chooseNextQuestion(
   input: ChooseQuestionInput
-): Promise<{ question: QuestionCandidate; qValue: number }> {
+): Promise<{ question: QuestionCandidate; qValue: number; source: repo.QuestionSource }> {
   const ctx = {
     states: input.states,
     contradictions: input.contradictions,
@@ -221,7 +277,7 @@ async function chooseNextQuestion(
 
       const selection = selectQuestion(candidates, ctx);
       if (selection.selected) {
-        return { question: selection.selected, qValue: selection.qValue };
+        return { question: selection.selected, qValue: selection.qValue, source: "llm" };
       }
       console.warn(`[turnService] all candidates excluded as duplicates (attempt ${attempt + 1})`);
     } catch (error) {
@@ -230,7 +286,7 @@ async function chooseNextQuestion(
   }
 
   const fallback = pickFallbackQuestion(input.askedQuestions, input.states, input.bannedKinds);
-  if (fallback) return { question: fallback, qValue: 0 };
+  if (fallback) return { question: fallback, qValue: 0, source: "fallback" };
 
   // Every fallback used too: ask the user to expand rather than repeat verbatim.
   return {
@@ -243,6 +299,7 @@ async function chooseNextQuestion(
       rationale: "exhausted fallback set",
     },
     qValue: 0,
+    source: "exhausted",
   };
 }
 
