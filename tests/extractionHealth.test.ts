@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assessExtraction,
   describeExtraction,
+  describeExtractionForOperator,
   DEGRADED_WINDOW,
 } from "@/lib/engine/extractionHealth";
 import type { TurnDiagnosticRecord } from "@/lib/db/repository";
@@ -61,7 +62,10 @@ describe("assessExtraction", () => {
     expect(health.analystFailures).toBe(5);
     expect(health.nonLlmQuestions).toBe(5);
     expect(health.degraded).toBe(true);
-    expect(describeExtraction(health)).toContain("システム側の問題");
+    expect(describeExtraction(health)).toContain("システム側の不具合");
+    // The reader of the result screen cannot change configuration; never name it at them.
+    expect(describeExtraction(health)).not.toMatch(/ANTHROPIC|APIキー|環境変数/);
+    expect(describeExtractionForOperator(health)).toContain("/api/health");
   });
 
   /** Same zero result, different cause: the model answered but fabricated quotes. */
@@ -81,7 +85,8 @@ describe("assessExtraction", () => {
     expect(health.analystFailures).toBe(0);
     expect(health.totalRejected).toBe(9);
     expect(health.rejectedReasons.not_grounded).toBe(9);
-    expect(describeExtraction(health)).toContain("引用の照合");
+    expect(describeExtraction(health)).toContain("あなたの回答に問題があったわけではありません");
+    expect(describeExtractionForOperator(health)).toContain("引用");
   });
 
   /** And the case that is genuinely the answers, not the system. */
@@ -89,7 +94,8 @@ describe("assessExtraction", () => {
     const diagnostics = [1, 2, 3].map((t) => turn({ turn: t, extracted: 0, accepted: 0 }));
     const health = assessExtraction(diagnostics);
     expect(health.status).toBe("sparse_answers");
-    expect(describeExtraction(health)).toContain("具体的な出来事");
+    // The one case that genuinely is about the answers — so it stays actionable.
+    expect(describeExtraction(health)).toContain("いつ・何をした");
   });
 
   /** The warning must not fire on turn 1 just because history is short. */

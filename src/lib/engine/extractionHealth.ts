@@ -129,15 +129,38 @@ function classify(rows: readonly TurnDiagnosticRecord[]): ExtractionStatus {
   return "ok";
 }
 
-/** One-line Japanese explanation for the result screen. */
+/**
+ * What to tell the person looking at the result screen.
+ *
+ * That person took the diagnosis; they cannot change an environment variable,
+ * and naming one at them reads as blame for a failure that is not theirs. So
+ * these say whose problem it is and what they can actually do. The operator's
+ * version — which variable, which console, which order — lives in /api/health,
+ * where the person who can act on it will be looking.
+ */
 export function describeExtraction(health: ExtractionHealth): string | null {
   switch (health.status) {
     case "analyst_down":
-      return "会話の読み取り処理（Evidence抽出）が失敗しています。診断結果ではなくシステム側の問題です。APIキー・モデル設定・接続を確認してください。";
+      return "システム側の不具合で、会話の読み取りができていませんでした。あなたの回答に問題があったわけではありません。時間をおいて新しく診断を始めるか、この画面のことを運営に伝えてください。";
     case "quotes_ungrounded":
-      return "読み取りは動いていますが、引用の照合にすべて失敗しています。抽出された根拠が実際の発言と一致しないため破棄されました。";
+      return "システム側の不具合で、読み取った内容を確定できませんでした。あなたの回答に問題があったわけではありません。時間をおいて新しく診断を始めるか、この画面のことを運営に伝えてください。";
     case "sparse_answers":
-      return "読み取りは正常に動いていますが、今回の回答からは根拠を取り出せませんでした。具体的な出来事や行動を含めて話すと、根拠が集まりやすくなります。";
+      return "読み取りは正常に動いていますが、今回の回答からは根拠を取り出せませんでした。「いつ・何をした・そのとき何を考えた」が入る形で話すと、根拠が集まりやすくなります。";
+    case "ok":
+    case "no_data":
+      return null;
+  }
+}
+
+/** The operator-facing one-liner, for logs and /api/health. */
+export function describeExtractionForOperator(health: ExtractionHealth): string | null {
+  switch (health.status) {
+    case "analyst_down":
+      return "Call A が失敗しています。/api/health を開いて原因（キー / モデルID / 接続）を確認してください。";
+    case "quotes_ungrounded":
+      return "Call A は応答していますが、引用がユーザー発話と照合できず全件破棄されています。プロンプトかモデル設定を確認してください。";
+    case "sparse_answers":
+      return "システムは正常です。回答の具体性が不足しています。";
     case "ok":
     case "no_data":
       return null;

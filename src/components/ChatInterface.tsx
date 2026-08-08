@@ -172,7 +172,7 @@ export default function ChatInterface() {
       */}
       {degraded && !aborted && (
         <p className="mt-3 shrink-0 rounded-lg border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-sm text-amber-200">
-          回答の読み取りが続けて失敗しています。会話は続けられますが、このままでは結果に反映されない可能性があります。
+          システム側で読み取りが続けて失敗しています。あなたの回答の問題ではありません。このまま会話は続けられますが、結果に反映されない可能性があります。
         </p>
       )}
 

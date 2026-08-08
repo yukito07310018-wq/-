@@ -20,7 +20,7 @@ const TONE: Record<string, { border: string; bg: string; text: string; label: st
     border: "border-amber-900/60",
     bg: "bg-amber-950/40",
     text: "text-amber-200",
-    label: "引用の照合に失敗",
+    label: "システムエラー",
   },
   sparse_answers: {
     border: "border-[color:var(--border)]",
@@ -42,7 +42,9 @@ export default function ExtractionHealthNotice({ health }: { health: ExtractionH
       <p className={`font-semibold ${tone.text}`}>{tone.label}</p>
       <p className={`mt-2 leading-relaxed ${tone.text}`}>{message}</p>
 
-      <dl className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-[color:var(--muted)]">
+      {/* Kept visible so the user can screenshot it for whoever operates the app. */}
+      <p className="mt-4 text-xs text-[color:var(--muted)]">運営向けの情報（そのままお伝えください）</p>
+      <dl className="mt-1 flex flex-wrap gap-x-5 gap-y-1 text-xs text-[color:var(--muted)]">
         <div className="flex gap-1">
           <dt>記録ターン</dt>
           <dd className="tabular-nums">{health.turnsRecorded}</dd>

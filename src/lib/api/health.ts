@@ -18,13 +18,23 @@ import { ELEMENTS } from "../model/elements";
 export interface HealthCheck {
   ok: boolean;
   detail: string;
+  /** Numbered steps that actually fix this check. Empty when it passes. */
+  remedy?: string[];
 }
 
 export interface HealthReport {
   ok: boolean;
   checks: Record<string, HealthCheck>;
   hint: string | null;
+  /** The one thing to do next, resolved from whichever check is failing. */
+  nextSteps: { title: string; steps: string[] } | null;
 }
+
+/** Where the operator changes configuration. Named so the steps stay concrete. */
+const VERCEL_ENV_PATH = "Vercel → プロジェクト → Settings → Environment Variables";
+const REDEPLOY_NOTE =
+  "Deployments → 最新のデプロイ → Redeploy を実行する（環境変数の変更は再デプロイしないと反映されません）";
+const CONSOLE_KEYS = "https://console.anthropic.com/settings/keys";
 
 /**
  * Strips anything key-shaped out of upstream error text.
@@ -69,6 +79,54 @@ export function diagnoseUpstreamStatus(status: number | undefined): string | nul
   }
 }
 
+/**
+ * The steps that fix each status.
+ *
+ * Naming the broken variable is not enough to act on: knowing it is the key
+ * still leaves "where do I change it, and why did changing it do nothing?"
+ * (the answer being that Vercel needs a redeploy). These spell that out.
+ */
+export function remedyForStatus(status: number | undefined): string[] {
+  switch (status) {
+    case 401:
+      return [
+        `${CONSOLE_KEYS} を開き、有効なAPIキーがあるか確認する（無ければ新規作成する）`,
+        `${VERCEL_ENV_PATH} を開き、ANTHROPIC_API_KEY の値をそのキーに置き換える`,
+        REDEPLOY_NOTE,
+        "このページを再読み込みして、この項目が緑になることを確認する",
+      ];
+    case 403:
+      return [
+        `${CONSOLE_KEYS} で、そのキーが対象モデルを使える権限を持つか確認する`,
+        "権限のあるキーに差し替えるか、使えるモデルを ANTHROPIC_MODEL に設定する",
+        REDEPLOY_NOTE,
+      ];
+    case 404:
+      return [
+        `${VERCEL_ENV_PATH} で ANTHROPIC_MODEL の値を確認する`,
+        "正しいモデルIDに直す。分からなければこの変数ごと削除すると既定の claude-sonnet-4-5 が使われる",
+        REDEPLOY_NOTE,
+      ];
+    case 429:
+      return [
+        "設定は正しいので変更は不要。数分おいてから再読み込みする",
+        "頻発する場合は https://console.anthropic.com で利用量と上限を確認する",
+      ];
+    default:
+      if (status !== undefined && status >= 500) {
+        return [
+          "設定の問題ではないため変更は不要。数分おいてから再読み込みする",
+          "続く場合は https://status.anthropic.com で障害情報を確認する",
+        ];
+      }
+      return [
+        `${VERCEL_ENV_PATH} で ANTHROPIC_BASE_URL が設定されていないか確認する（テスト用の値が残っていると本番に届きません）`,
+        "設定されている場合は削除して、既定の接続先に戻す",
+        REDEPLOY_NOTE,
+      ];
+  }
+}
+
 /** Digs the transport status out of the AiUnavailableError the probe wraps. */
 function statusOf(error: unknown): number | undefined {
   const cause = (error as { cause?: unknown } | null)?.cause;
@@ -82,7 +140,15 @@ function statusOf(error: unknown): number | undefined {
 async function checkApiKey(): Promise<HealthCheck> {
   const key = process.env.ANTHROPIC_API_KEY?.trim();
   if (!key) {
-    return { ok: false, detail: "ANTHROPIC_API_KEY が未設定です" };
+    return {
+      ok: false,
+      detail: "ANTHROPIC_API_KEY が未設定です",
+      remedy: [
+        `${CONSOLE_KEYS} でAPIキーを作成する`,
+        `${VERCEL_ENV_PATH} で ANTHROPIC_API_KEY という名前で追加する`,
+        REDEPLOY_NOTE,
+      ],
+    };
   }
   // Length only — never the value, not even a prefix.
   return { ok: true, detail: `設定済み (${key.length}文字)` };
@@ -119,6 +185,7 @@ async function checkModelReachable(): Promise<HealthCheck> {
       detail: diagnosis
         ? `HTTP ${status} — ${diagnosis}`
         : `${describeError(error)}（HTTPステータスなし＝接続自体が成立していません）`,
+      remedy: remedyForStatus(status),
     };
   }
 
@@ -141,7 +208,16 @@ async function checkDatabase(): Promise<HealthCheck> {
   } catch (error) {
     console.error("[health] database check failed:", error);
     const name = error instanceof Error ? error.name : "UnknownError";
-    return { ok: false, detail: `接続できません (${name})。DATABASE_URL とログを確認してください` };
+    return {
+      ok: false,
+      detail: `接続できません (${name})。DATABASE_URL とログを確認してください`,
+      remedy: [
+        `${VERCEL_ENV_PATH} で DATABASE_URL の値を確認する`,
+        "データベース側が起動していて、外部からの接続を受け付けているか確認する",
+        "エラーの全文はサーバログ（Vercel → Deployments → Runtime Logs）に出ています",
+        REDEPLOY_NOTE,
+      ],
+    };
   }
 }
 
@@ -159,8 +235,11 @@ async function checkDiagnosticTable(): Promise<HealthCheck> {
     if (code === PRISMA_TABLE_MISSING) {
       return {
         ok: false,
-        detail:
-          "TurnDiagnostic が存在しません。npm run db:migrate を実行してください（対話は動きますが原因判定は効きません）",
+        detail: "TurnDiagnostic が存在しません（対話は動きますが原因判定は効きません）",
+        remedy: [
+          "手元で次を実行する: DATABASE_URL=\"<本番の接続文字列>\" npm run db:migrate",
+          "再デプロイは不要。このページを再読み込みして緑になることを確認する",
+        ],
       };
     }
     // Anything else is not a pending migration, and saying so would send the
@@ -204,7 +283,45 @@ export async function buildHealthReport(probeModel = true): Promise<HealthReport
     ok: Object.entries(checks).every(([name, c]) => c.ok || name === "turn_diagnostic_table"),
     checks,
     hint: buildHint(checks),
+    nextSteps: buildNextSteps(checks),
   };
+}
+
+/** Labels used on the page; keyed to match the check names. */
+export const CHECK_LABELS: Record<string, string> = {
+  anthropic_api_key: "APIキーの設定",
+  anthropic_model: "使用するモデル",
+  anthropic_reachable: "AIへの接続",
+  database: "データベース",
+  element_model: "要素モデル",
+  turn_diagnostic_table: "診断テーブル",
+};
+
+/**
+ * Resolves the failing checks down to one instruction list.
+ *
+ * Showing every failure at once invites fixing the wrong one first: a bad key
+ * makes the reachability check fail too, and chasing that second symptom wastes
+ * the operator's time. Order follows what has to be true before the next thing
+ * can work.
+ */
+function buildNextSteps(
+  checks: Record<string, HealthCheck>
+): { title: string; steps: string[] } | null {
+  const order = [
+    "anthropic_api_key",
+    "anthropic_reachable",
+    "database",
+    "element_model",
+    "turn_diagnostic_table",
+  ];
+  for (const name of order) {
+    const check = checks[name];
+    if (check && !check.ok && check.remedy?.length) {
+      return { title: `${CHECK_LABELS[name] ?? name}を直す`, steps: check.remedy };
+    }
+  }
+  return null;
 }
 
 function buildHint(checks: Record<string, HealthCheck>): string | null {
