@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { redact } from "@/lib/api/health";
+import { diagnoseUpstreamStatus, redact } from "@/lib/api/health";
 
 /**
  * §3 — /api/health is unauthenticated, so anything it echoes from an upstream
@@ -29,5 +29,38 @@ describe("redact", () => {
   it("leaves ordinary text alone", () => {
     const text = "モデル \"claude-sonnet-4-5\" に接続できませんでした。";
     expect(redact(text)).toBe(text);
+  });
+});
+
+/**
+ * A wrong key and a wrong model id fail identically downstream — zero evidence
+ * on every turn. Naming which one is the entire value of the probe.
+ */
+describe("diagnoseUpstreamStatus", () => {
+  it("blames the key on 401", () => {
+    expect(diagnoseUpstreamStatus(401)).toContain("ANTHROPIC_API_KEY");
+    expect(diagnoseUpstreamStatus(401)).not.toContain("ANTHROPIC_MODEL");
+  });
+
+  it("blames the model id on 404, not the key", () => {
+    expect(diagnoseUpstreamStatus(404)).toContain("ANTHROPIC_MODEL");
+    expect(diagnoseUpstreamStatus(404)).not.toContain("ANTHROPIC_API_KEY");
+  });
+
+  it("blames permissions on 403", () => {
+    expect(diagnoseUpstreamStatus(403)).toContain("権限");
+  });
+
+  it("says the configuration is fine on 429", () => {
+    expect(diagnoseUpstreamStatus(429)).toContain("設定は正しく");
+  });
+
+  it("points upstream on 5xx", () => {
+    expect(diagnoseUpstreamStatus(503)).toContain("相手側");
+  });
+
+  /** No status at all means the request never got a reply — a different fix. */
+  it("returns null when there is no HTTP status", () => {
+    expect(diagnoseUpstreamStatus(undefined)).toBeNull();
   });
 });

@@ -44,6 +44,41 @@ function describeError(error: unknown): string {
   return redact(String(error).slice(0, 300));
 }
 
+/**
+ * Turns the upstream HTTP status into the specific thing to go and fix.
+ *
+ * "接続できませんでした" is true but useless: a wrong key and a wrong model id
+ * produce identical symptoms downstream (zero evidence, every turn), and the
+ * whole point of this endpoint is to say which one you are looking at.
+ */
+export function diagnoseUpstreamStatus(status: number | undefined): string | null {
+  switch (status) {
+    case 401:
+      return "ANTHROPIC_API_KEY が無効です（認証拒否）。キーの値を確認してください。";
+    case 403:
+      return "ANTHROPIC_API_KEY にこのモデルへの権限がありません。";
+    case 404:
+      return "ANTHROPIC_MODEL のモデルIDが存在しません。キーではなくモデル名の問題です。";
+    case 429:
+      return "利用制限に達しています。設定は正しく、時間をおけば回復します。";
+    default:
+      if (status !== undefined && status >= 500) {
+        return "上流が一時的に不調です。設定ではなく相手側の問題の可能性があります。";
+      }
+      return null;
+  }
+}
+
+/** Digs the transport status out of the AiUnavailableError the probe wraps. */
+function statusOf(error: unknown): number | undefined {
+  const cause = (error as { cause?: unknown } | null)?.cause;
+  for (const candidate of [cause, error]) {
+    const status = (candidate as { status?: unknown } | null)?.status;
+    if (typeof status === "number") return status;
+  }
+  return undefined;
+}
+
 async function checkApiKey(): Promise<HealthCheck> {
   const key = process.env.ANTHROPIC_API_KEY?.trim();
   if (!key) {
@@ -77,7 +112,14 @@ async function checkModelReachable(): Promise<HealthCheck> {
     await verifyModelAccess();
     check = { ok: true, detail: "疎通OK" };
   } catch (error) {
-    check = { ok: false, detail: describeError(error) };
+    const status = statusOf(error);
+    const diagnosis = diagnoseUpstreamStatus(status);
+    check = {
+      ok: false,
+      detail: diagnosis
+        ? `HTTP ${status} — ${diagnosis}`
+        : `${describeError(error)}（HTTPステータスなし＝接続自体が成立していません）`,
+    };
   }
 
   cachedProbe = { at: Date.now(), check };
@@ -167,7 +209,7 @@ export async function buildHealthReport(probeModel = true): Promise<HealthReport
 
 function buildHint(checks: Record<string, HealthCheck>): string | null {
   if (!checks.anthropic_api_key.ok || !checks.anthropic_reachable.ok) {
-    return "Evidence抽出（Call A）が毎ターン失敗します。会話は続きますが根拠は0件のままになり、結果画面は「情報不足」になります。ANTHROPIC_API_KEY と ANTHROPIC_MODEL を確認してください。";
+    return `Evidence抽出（Call A）が毎ターン失敗します。会話は続きますが根拠は0件のままになり、結果画面は「情報不足」になります。→ ${checks.anthropic_reachable.detail}`;
   }
   if (!checks.database.ok) return "DBに接続できません。DATABASE_URL を確認してください。";
   if (!checks.turn_diagnostic_table.ok) {
