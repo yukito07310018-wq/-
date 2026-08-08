@@ -207,20 +207,35 @@ export async function callModelStructured<T>(options: StructuredCallOptions<T>):
   throw new AiUnavailableError(`${options.label}: 有効な JSON を取得できませんでした。`);
 }
 
-/** Startup connectivity probe (§3): fails loudly with an actionable message. */
+/** How long the connectivity probe waits before calling the model unreachable. */
+export const PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Connectivity probe (§3): fails loudly with an actionable message.
+ *
+ * Bounded by its own timeout — this backs a health endpoint, and a probe that
+ * hangs until the function deadline reports nothing at all.
+ */
 export async function verifyModelAccess(): Promise<void> {
   const model = getModelId();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   try {
     const anthropic = getClient();
-    await anthropic.messages.create({
-      model,
-      max_tokens: 8,
-      messages: [{ role: "user", content: "ping" }],
-    });
+    await anthropic.messages.create(
+      {
+        model,
+        max_tokens: 8,
+        messages: [{ role: "user", content: "ping" }],
+      },
+      { signal: controller.signal }
+    );
   } catch (error) {
     throw new AiUnavailableError(
       `モデル "${model}" に接続できませんでした。ANTHROPIC_MODEL と ANTHROPIC_API_KEY を確認してください。`,
       error
     );
+  } finally {
+    clearTimeout(timeout);
   }
 }

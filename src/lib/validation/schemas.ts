@@ -71,7 +71,7 @@ export const ElementIdSchema = z
 /** §9: one evidence item. The LLM never emits score/confidence — only these fields. */
 export const EvidenceItemSchema = z.object({
   element_id: ElementIdSchema,
-  quote: z.string().min(1).max(400), // hard length policy (10-120) enforced in quoteVerifier
+  quote: z.string().min(1).max(400), // hard length policy (6-120) enforced in quoteVerifier
   type: z.enum(EVIDENCE_TYPES),
   strength: z.number().min(0).max(1),
   reliability: z.number().min(0).max(1),

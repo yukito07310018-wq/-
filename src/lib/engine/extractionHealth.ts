@@ -87,7 +87,11 @@ export function assessExtraction(
 
   const recent = diagnostics.slice(-DEGRADED_WINDOW);
   const recentFailures = recent.filter((d) => !d.analystOk || d.accepted === 0);
-  health.degraded = recentFailures.length >= Math.min(DEGRADED_MIN_FAILURES, recent.length);
+  // A full DEGRADED_MIN_FAILURES is required even when the history is shorter
+  // than the window. Scaling the threshold down to fit meant the very first
+  // thin answer tripped the warning, which is exactly the false alarm the
+  // window exists to prevent.
+  health.degraded = recentFailures.length >= DEGRADED_MIN_FAILURES;
 
   // Once things are failing, the failing turns describe the situation better
   // than the lifetime totals: an interview that worked for four turns and then

@@ -11,7 +11,7 @@ CREATE TABLE "TurnDiagnostic" (
     "rejectedReasons" TEXT NOT NULL DEFAULT '{}',
     "repaired" BOOLEAN NOT NULL DEFAULT false,
     "droppedByLimits" INTEGER NOT NULL DEFAULT 0,
-    "questionSource" TEXT NOT NULL DEFAULT 'llm',
+    "questionSource" TEXT NOT NULL DEFAULT 'none',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "TurnDiagnostic_pkey" PRIMARY KEY ("id")

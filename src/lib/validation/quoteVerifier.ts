@@ -51,18 +51,28 @@ export function emptyRejectionCounts(): QuoteRejectionCounts {
 
 /** Verifies a single quote against the utterance it claims to come from. */
 export function verifyQuote(quote: string, utterance: string): QuoteCheck {
-  const quoteLength = [...quote.trim()].length;
-  if (quoteLength < MIN_QUOTE_CHARS) return { ok: false, reason: "too_short", similarity: 0 };
-  if (quoteLength > MAX_QUOTE_CHARS) return { ok: false, reason: "too_long", similarity: 0 };
+  // Length is capped on the raw text, which is what the result page displays.
+  if ([...quote.trim()].length > MAX_QUOTE_CHARS) {
+    return { ok: false, reason: "too_long", similarity: 0 };
+  }
 
   const nq = normalizeText(quote);
   const nu = normalizeText(utterance);
-  if (nq.length === 0) return { ok: false, reason: "too_short", similarity: 0 };
+
+  // ...but the minimum is measured after normalisation, because that is the
+  // string grounding actually compares. Counting raw characters let padding
+  // that normalises away — 「うん、うん、」 is four real characters wearing six —
+  // clear the bar and become evidence.
+  const meaningfulLength = [...nq].length;
+  if (meaningfulLength < MIN_QUOTE_CHARS) return { ok: false, reason: "too_short", similarity: 0 };
+
   if (nu.includes(nq)) return { ok: true, similarity: 1 };
 
   // Exact match failed. Short spans stop here: the fuzzy comparison below has
   // too few trigrams to separate a real quote from a coincidence.
-  if (quoteLength < FUZZY_MIN_QUOTE_CHARS) return { ok: false, reason: "not_grounded", similarity: 0 };
+  if (meaningfulLength < FUZZY_MIN_QUOTE_CHARS) {
+    return { ok: false, reason: "not_grounded", similarity: 0 };
+  }
 
   // Allow near-misses caused by orthographic variation, comparing against the
   // best-matching window of the utterance rather than the whole thing (a short

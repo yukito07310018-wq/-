@@ -53,34 +53,78 @@ async function checkApiKey(): Promise<HealthCheck> {
   return { ok: true, detail: `設定済み (${key.length}文字)` };
 }
 
-async function checkModelReachable(): Promise<HealthCheck> {
-  try {
-    await verifyModelAccess();
-    return { ok: true, detail: "疎通OK" };
-  } catch (error) {
-    return { ok: false, detail: describeError(error) };
-  }
+/**
+ * The probe is a billed upstream call on an unauthenticated route, so its
+ * result is reused briefly. Short enough that an operator retrying after a
+ * config change sees the new answer, long enough that repeated hits cannot
+ * turn a health check into a spend.
+ */
+export const PROBE_CACHE_MS = 30_000;
+let cachedProbe: { at: number; check: HealthCheck } | null = null;
+
+/** Test seam — the cache is process-wide and would otherwise leak between cases. */
+export function resetProbeCache(): void {
+  cachedProbe = null;
 }
 
+async function checkModelReachable(): Promise<HealthCheck> {
+  if (cachedProbe && Date.now() - cachedProbe.at < PROBE_CACHE_MS) {
+    return cachedProbe.check;
+  }
+
+  let check: HealthCheck;
+  try {
+    await verifyModelAccess();
+    check = { ok: true, detail: "疎通OK" };
+  } catch (error) {
+    check = { ok: false, detail: describeError(error) };
+  }
+
+  cachedProbe = { at: Date.now(), check };
+  return check;
+}
+
+/**
+ * Database errors are reported by class only.
+ *
+ * Driver text carries connection strings, internal hostnames and private IPs,
+ * and this endpoint is unauthenticated — redact() only removes key-shaped
+ * strings, so it would not catch any of that. The full error goes to the log,
+ * which is where an operator can safely read it (§39).
+ */
 async function checkDatabase(): Promise<HealthCheck> {
   try {
     await prisma.$queryRaw`SELECT 1`;
     return { ok: true, detail: "接続OK" };
   } catch (error) {
-    return { ok: false, detail: describeError(error) };
+    console.error("[health] database check failed:", error);
+    const name = error instanceof Error ? error.name : "UnknownError";
+    return { ok: false, detail: `接続できません (${name})。DATABASE_URL とログを確認してください` };
   }
 }
+
+/** Postgres error for "relation does not exist", surfaced by Prisma as P2021. */
+const PRISMA_TABLE_MISSING = "P2021";
 
 /** Whether the TurnDiagnostic migration has been applied (it is applied by hand). */
 async function checkDiagnosticTable(): Promise<HealthCheck> {
   try {
     await prisma.turnDiagnostic.count();
     return { ok: true, detail: "移行適用済み" };
-  } catch {
-    return {
-      ok: false,
-      detail: "TurnDiagnostic が存在しません。npm run db:migrate を実行してください（対話は動きますが原因判定は効きません）",
-    };
+  } catch (error) {
+    console.error("[health] diagnostic table check failed:", error);
+    const code = (error as { code?: string } | null)?.code;
+    if (code === PRISMA_TABLE_MISSING) {
+      return {
+        ok: false,
+        detail:
+          "TurnDiagnostic が存在しません。npm run db:migrate を実行してください（対話は動きますが原因判定は効きません）",
+      };
+    }
+    // Anything else is not a pending migration, and saying so would send the
+    // operator to the wrong fix.
+    const name = error instanceof Error ? error.name : "UnknownError";
+    return { ok: false, detail: `確認できません (${name})。ログを確認してください` };
   }
 }
 

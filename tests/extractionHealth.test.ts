@@ -92,6 +92,20 @@ describe("assessExtraction", () => {
     expect(describeExtraction(health)).toContain("具体的な出来事");
   });
 
+  /** The warning must not fire on turn 1 just because history is short. */
+  it("does not warn on the very first thin answer", () => {
+    const health = assessExtraction([turn({ turn: 1, extracted: 0, accepted: 0 })]);
+    expect(health.degraded).toBe(false);
+  });
+
+  it("warns once a second turn also fails", () => {
+    const health = assessExtraction([
+      turn({ turn: 1, extracted: 0, accepted: 0 }),
+      turn({ turn: 2, extracted: 0, accepted: 0 }),
+    ]);
+    expect(health.degraded).toBe(true);
+  });
+
   it("does not call a single bad turn degraded", () => {
     const diagnostics = [
       turn({ turn: 1 }),

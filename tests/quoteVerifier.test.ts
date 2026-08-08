@@ -42,6 +42,15 @@ describe("verifyQuote", () => {
     expect(verifyQuote(quote, groundedAnswer).ok).toBe(true);
   });
 
+  /** Raw length counted padding that normalisation strips, letting filler in. */
+  it("measures the minimum after normalisation, not on raw characters", () => {
+    const filler = "うん、うん、"; // 6 raw characters, 4 once punctuation is removed
+    expect([...filler].length).toBeGreaterThanOrEqual(MIN_QUOTE_CHARS);
+    const check = verifyQuote(filler, `${filler}それで結局やめました。`);
+    expect(check.ok).toBe(false);
+    expect(check.reason).toBe("too_short");
+  });
+
   it("requires short quotes to match exactly rather than fuzzily", () => {
     // Same length class as an accepted span, but not present in the answer.
     const quote = "全部やめました";

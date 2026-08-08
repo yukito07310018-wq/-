@@ -50,6 +50,19 @@ function realQuotes(answer, count) {
 
 const ELEMENT_POOL = ["E001", "E051", "E029", "E066", "E081", "E018", "E021", "E092"];
 
+/**
+ * The element ids the prompt actually offered.
+ *
+ * A real model can only answer with elements it was shown -- both system
+ * prompts say so explicitly. Drawing from a fixed pool instead would hide the
+ * effect of context selection, which is precisely what the mock is here to
+ * exercise. Falls back to the pool if no catalogue is present.
+ */
+function offeredElements(userPrompt) {
+  const ids = [...new Set([...userPrompt.matchAll(/^(E\d{3}) \[/gm)].map((m) => m[1]))];
+  return ids.length > 0 ? ids : ELEMENT_POOL;
+}
+
 // Rotated independently of the element so evidence diversity actually varies.
 const TYPE_POOL = [
   "personal_experience",
@@ -68,8 +81,9 @@ function analystResponse(userPrompt) {
   const quotes = mode === "ungrounded" ? FABRICATED_QUOTES : realQuotes(answer, 3);
   analystTurn += 1;
 
+  const offered = offeredElements(userPrompt);
   const evidence = quotes.map((quote, i) => ({
-    element_id: ELEMENT_POOL[(analystTurn + i) % ELEMENT_POOL.length],
+    element_id: offered[(analystTurn * 3 + i) % offered.length],
     quote,
     type: TYPE_POOL[(analystTurn * 2 + i) % TYPE_POOL.length],
     strength: 0.8,
@@ -84,12 +98,13 @@ function analystResponse(userPrompt) {
 
 let questionCounter = 0;
 
-function interviewerResponse() {
+function interviewerResponse(userPrompt) {
   questionCounter += 1;
+  const offered = offeredElements(userPrompt);
   const kinds = ["experience", "behavior", "decision", "value", "future", "relationship"];
   const questions = [0, 1, 2].map((i) => ({
     text: `モック質問${questionCounter}-${i}：${["これまでに", "最近", "以前"][i]}あなたが自分で決めて動いた場面を、具体的に教えてください。`,
-    target_elements: [ELEMENT_POOL[(questionCounter + i) % ELEMENT_POOL.length]],
+    target_elements: [offered[(questionCounter * 3 + i) % offered.length]],
     probe_kind: kinds[(questionCounter + i) % kinds.length],
     expected_yield: 0.7 - i * 0.1,
     rationale: "mock",
@@ -158,7 +173,7 @@ const server = createServer((req, res) => {
       }
       text = analystResponse(userPrompt);
     } else if (system.includes("adaptive interviewer")) {
-      text = interviewerResponse();
+      text = interviewerResponse(userPrompt);
     } else {
       text = "なるほど、詳しく話してくださってありがとうございます。";
     }
