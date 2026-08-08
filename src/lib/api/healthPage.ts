@@ -53,11 +53,17 @@ export function renderHealthPage(report: HealthReport): string {
     })
     .join("\n");
 
-  const steps = report.nextSteps
-    ? `<section class="steps">
-        <h2>次にやること — ${escapeHtml(report.nextSteps.title)}</h2>
-        <ol>${report.nextSteps.steps.map((s) => `<li>${linkify(s)}</li>`).join("")}</ol>
-        <p class="note">直したあと、このページを再読み込みしてください。結果は最大30秒キャッシュされます。</p>
+  const next = report.nextSteps;
+  const steps = next
+    ? `<section class="steps${next.optional ? " optional" : ""}">
+        <h2>${next.optional ? escapeHtml(next.title) : `次にやること — ${escapeHtml(next.title)}`}</h2>
+        ${
+          next.optional
+            ? `<p class="lead">対話も診断もこのままで動きます。これを行うと、根拠が集まらなかったときに<strong>その原因</strong>が結果画面に出るようになります。急ぎではありません。</p>`
+            : ""
+        }
+        <ol>${next.steps.map((s) => `<li>${linkify(s)}</li>`).join("")}</ol>
+        <p class="note">実行したあと、このページを再読み込みしてください。結果は最大30秒キャッシュされます。</p>
       </section>`
     : "";
 
@@ -88,8 +94,11 @@ export function renderHealthPage(report: HealthReport): string {
   td.label code { display:block; font-size:.72rem; opacity:.55; }
   td.detail { opacity:.9; }
   .steps { border:1px solid #30363d; border-radius:12px; padding:1.25rem; background:rgba(255,255,255,.03); }
+  .steps.optional { border-style:dashed; opacity:.85; }
+  .steps.optional h2 { font-weight:600; opacity:.8; }
   .steps ol { margin:0; padding-left:1.3rem; }
   .steps li { margin-bottom:.6rem; }
+  .lead { margin:0 0 1rem; font-size:.88rem; opacity:.8; }
   .note { font-size:.82rem; opacity:.65; margin:1rem 0 0; }
   a { color:#58a6ff; }
   footer { margin-top:2rem; font-size:.78rem; opacity:.55; }

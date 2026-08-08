@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diagnoseUpstreamStatus, redact } from "@/lib/api/health";
+import { diagnoseUpstreamStatus, redact, remedyForStatus } from "@/lib/api/health";
 
 /**
  * §3 — /api/health is unauthenticated, so anything it echoes from an upstream
@@ -62,5 +62,33 @@ describe("diagnoseUpstreamStatus", () => {
   /** No status at all means the request never got a reply — a different fix. */
   it("returns null when there is no HTTP status", () => {
     expect(diagnoseUpstreamStatus(undefined)).toBeNull();
+  });
+});
+
+/**
+ * Naming the broken variable is not yet actionable: on Vercel a changed
+ * environment variable does nothing until the next deploy, and an operator who
+ * is not told that concludes the diagnosis was wrong.
+ */
+describe("remedyForStatus", () => {
+  it("tells the operator to redeploy after changing a variable", () => {
+    for (const status of [401, 403, 404]) {
+      expect(remedyForStatus(status).join(" ")).toContain("Redeploy");
+    }
+  });
+
+  it("says where to change it, not just what to change", () => {
+    expect(remedyForStatus(401).join(" ")).toContain("Environment Variables");
+  });
+
+  it("does not ask for a redeploy when nothing needs changing", () => {
+    expect(remedyForStatus(429).join(" ")).not.toContain("Redeploy");
+    expect(remedyForStatus(503).join(" ")).not.toContain("Redeploy");
+  });
+
+  it("always gives at least one concrete step", () => {
+    for (const status of [401, 403, 404, 429, 500, undefined]) {
+      expect(remedyForStatus(status).length).toBeGreaterThan(0);
+    }
   });
 });

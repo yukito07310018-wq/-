@@ -27,7 +27,7 @@ export interface HealthReport {
   checks: Record<string, HealthCheck>;
   hint: string | null;
   /** The one thing to do next, resolved from whichever check is failing. */
-  nextSteps: { title: string; steps: string[] } | null;
+  nextSteps: { title: string; steps: string[]; optional: boolean } | null;
 }
 
 /** Where the operator changes configuration. Named so the steps stay concrete. */
@@ -237,7 +237,10 @@ async function checkDiagnosticTable(): Promise<HealthCheck> {
         ok: false,
         detail: "TurnDiagnostic が存在しません（対話は動きますが原因判定は効きません）",
         remedy: [
-          "手元で次を実行する: DATABASE_URL=\"<本番の接続文字列>\" npm run db:migrate",
+          `${VERCEL_ENV_PATH} で DATABASE_URL の値をコピーする`,
+          "このリポジトリを手元に clone し、npm install を実行する",
+          '次を実行する: DATABASE_URL="<コピーした値>" npm run db:migrate',
+          "既存データは変更されず、複数回実行しても安全です（適用済みの移行は飛ばされます）",
           "再デプロイは不要。このページを再読み込みして緑になることを確認する",
         ],
       };
@@ -307,7 +310,7 @@ export const CHECK_LABELS: Record<string, string> = {
  */
 function buildNextSteps(
   checks: Record<string, HealthCheck>
-): { title: string; steps: string[] } | null {
+): { title: string; steps: string[]; optional: boolean } | null {
   const order = [
     "anthropic_api_key",
     "anthropic_reachable",
@@ -318,7 +321,15 @@ function buildNextSteps(
   for (const name of order) {
     const check = checks[name];
     if (check && !check.ok && check.remedy?.length) {
-      return { title: `${CHECK_LABELS[name] ?? name}を直す`, steps: check.remedy };
+      // The diagnostic table is the one check that does not stop an interview,
+      // so its steps must not read as "your app is broken" — pairing a green
+      // verdict with an urgent-looking instruction is what made this confusing.
+      const optional = name === "turn_diagnostic_table";
+      return {
+        title: optional ? "任意: 原因の記録を有効にする" : `${CHECK_LABELS[name] ?? name}を直す`,
+        steps: check.remedy,
+        optional,
+      };
     }
   }
   return null;
