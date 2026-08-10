@@ -72,25 +72,27 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     .map((s) => s.element_id);
 
   // --- Call A: evidence extraction (§22-3) ----------------------------------
-  let analyst;
-  try {
-    analyst = await runAnalystCall({
-      question: lastQuestion,
-      answer: message,
-      elementIds: selectContextElements({
-        states,
-        contradictions: priorContradictions,
-        recentlyUpdated,
-      }),
-      conversation,
-      recentEvidence: priorEvidence,
+  //
+  // Deliberately *not* wrapped in a fallback. Evidence extraction is the only
+  // step that turns a conversation into a diagnosis, so a turn that cannot
+  // extract has produced nothing worth recording. Swallowing the failure and
+  // continuing with zero evidence lets the interview run its full length and
+  // finish "complete" on an empty model — the user answers 30 questions and
+  // receives a result built from nothing. Failing here instead keeps the turn
+  // uncounted and asks the user to resend; their answer is already saved above,
+  // and the turn number is unchanged, so the retry simply replaces it.
+  const analyst = await runAnalystCall({
+    question: lastQuestion,
+    answer: message,
+    elementIds: selectContextElements({
+      states,
       contradictions: priorContradictions,
-    });
-  } catch (error) {
-    // §36 failure handling: a failed extraction must not stop the conversation.
-    console.error("[turnService] analyst call failed, continuing with zero evidence:", error);
-    analyst = { evidence: [], contradictionCandidates: [], rejectedCount: 0, repaired: false };
-  }
+      recentlyUpdated,
+    }),
+    conversation,
+    recentEvidence: priorEvidence,
+    contradictions: priorContradictions,
+  });
 
   // --- deterministic model update (§22-4〜9) --------------------------------
   const update = applyTurn({

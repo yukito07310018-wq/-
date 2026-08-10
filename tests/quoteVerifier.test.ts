@@ -4,6 +4,7 @@ import { groundedAnswer } from "./fixtures/userAnswers";
 import { EvidenceExtractionSchema } from "@/lib/validation/schemas";
 import {
   MAX_QUOTE_CHARS,
+  MIN_SUBSTANTIVE_ANSWER_CHARS,
   REPAIR_TRIGGER_REJECTIONS,
   verifyEvidenceQuotes,
   verifyQuote,
@@ -68,5 +69,55 @@ describe("verifyEvidenceQuotes", () => {
     const result = verifyEvidenceQuotes(withExtra, groundedAnswer);
     expect(result.rejected.length).toBeGreaterThanOrEqual(REPAIR_TRIGGER_REJECTIONS);
     expect(result.shouldRepair).toBe(true);
+  });
+});
+
+/**
+ * A turn that banks no evidence advances the interview without advancing the
+ * model. Left unchecked it accumulates: the user answers every question and the
+ * diagnosis is still built on nothing, so an empty result is re-run rather than
+ * accepted.
+ */
+describe("empty extraction", () => {
+  it("requests a repair when a real answer yielded nothing", () => {
+    expect([...groundedAnswer].length).toBeGreaterThanOrEqual(MIN_SUBSTANTIVE_ANSWER_CHARS);
+
+    const result = verifyEvidenceQuotes([], groundedAnswer);
+
+    expect(result.accepted).toHaveLength(0);
+    expect(result.rejected).toHaveLength(0);
+    // Below REPAIR_TRIGGER_REJECTIONS, so only the empty-result rule can fire.
+    expect(result.shouldRepair).toBe(true);
+  });
+
+  it("requests a repair when every item was ungrounded, even below the threshold", () => {
+    const parsed = EvidenceExtractionSchema.parse(fabricated);
+    const onlyFabricated = parsed.evidence.filter(
+      (e) => !verifyQuote(e.quote, groundedAnswer).ok
+    );
+
+    const result = verifyEvidenceQuotes(onlyFabricated, groundedAnswer);
+
+    expect(result.accepted).toHaveLength(0);
+    expect(result.rejected.length).toBeLessThan(REPAIR_TRIGGER_REJECTIONS);
+    expect(result.shouldRepair).toBe(true);
+  });
+
+  it("accepts an empty result for an answer too short to quote", () => {
+    const brief = "特にないです";
+    expect([...brief].length).toBeLessThan(MIN_SUBSTANTIVE_ANSWER_CHARS);
+
+    const result = verifyEvidenceQuotes([], brief);
+
+    // Nothing to re-extract — this is a fair reading, not a failed extraction.
+    expect(result.shouldRepair).toBe(false);
+  });
+
+  it("does not request a repair when something was accepted", () => {
+    const parsed = EvidenceExtractionSchema.parse(fabricated);
+    const result = verifyEvidenceQuotes(parsed.evidence, groundedAnswer);
+
+    expect(result.accepted.length).toBeGreaterThan(0);
+    expect(result.shouldRepair).toBe(false);
   });
 });

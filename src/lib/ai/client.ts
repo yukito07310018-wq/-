@@ -9,7 +9,19 @@ import type { z } from "zod";
  */
 export const DEFAULT_MODEL = "claude-sonnet-4-5";
 
-export const REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * Per-attempt ceiling. Generous on purpose: aborting a call that would have
+ * returned costs the turn its evidence, and the retry that follows costs more
+ * time than simply waiting would have. This is a guard against a hung socket,
+ * not a latency target.
+ */
+export const REQUEST_TIMEOUT_MS = 90_000;
+/**
+ * Wall clock a single logical call may spend across all of its attempts.
+ * Without it, transport retries and schema repairs multiply (3 x 3 attempts)
+ * and a struggling call could outlive the request that started it.
+ */
+export const CALL_BUDGET_MS = 150_000;
 export const MAX_TRANSPORT_RETRIES = 2;
 export const MAX_REPAIR_ATTEMPTS = 2;
 
@@ -94,17 +106,24 @@ export interface RawCallOptions {
   temperature: number;
   /** Forces the reply to start as JSON, removing most prose/fence noise. */
   prefill?: string;
+  /** Epoch ms after which no further attempt is started. */
+  deadline?: number;
 }
 
 /** One completion, with timeout and transport-level retry. */
 export async function callModel(options: RawCallOptions): Promise<string> {
   const anthropic = getClient();
   const model = getModelId();
+  const deadline = options.deadline ?? Date.now() + CALL_BUDGET_MS;
 
   let lastError: unknown;
   for (let attempt = 0; attempt <= MAX_TRANSPORT_RETRIES; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    // Never wait past the budget, but otherwise let a slow call finish.
+    const timeout = setTimeout(() => controller.abort(), Math.min(REQUEST_TIMEOUT_MS, remaining));
     try {
       const messages: Anthropic.MessageParam[] = [{ role: "user", content: options.user }];
       if (options.prefill) messages.push({ role: "assistant", content: options.prefill });
@@ -175,10 +194,14 @@ export interface StructuredCallOptions<T> extends RawCallOptions {
  */
 export async function callModelStructured<T>(options: StructuredCallOptions<T>): Promise<T> {
   let feedback = "";
+  const deadline = options.deadline ?? Date.now() + CALL_BUDGET_MS;
 
   for (let attempt = 0; attempt <= MAX_REPAIR_ATTEMPTS; attempt++) {
+    if (Date.now() >= deadline) break;
+
     const raw = await callModel({
       ...options,
+      deadline,
       user: feedback ? `${options.user}\n\n${feedback}` : options.user,
     });
 

@@ -71,6 +71,20 @@ export default function ChatInterface() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, sending]);
 
+  /**
+   * A rejected turn is not recorded server-side, so the interview is still
+   * waiting for this same answer. Take the optimistic bubble back out and put
+   * the text back in the box so resending is one keypress, not a retype —
+   * unless the user has already started typing something else.
+   */
+  function restoreAfterFailure(text: string) {
+    setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      return last?.role === "user" && last.content === text ? prev.slice(0, -1) : prev;
+    });
+    setInput((current) => (current.trim().length > 0 ? current : text));
+  }
+
   async function send() {
     const text = input.trim();
     if (!text || sending || !sessionId || aborted) return;
@@ -90,6 +104,7 @@ export default function ChatInterface() {
 
       if (!res.ok) {
         setError(data?.error?.message ?? "送信に失敗しました。");
+        restoreAfterFailure(text);
         return;
       }
 
@@ -106,6 +121,7 @@ export default function ChatInterface() {
       }
     } catch {
       setError("送信に失敗しました。通信環境を確認してください。");
+      restoreAfterFailure(text);
     } finally {
       setSending(false);
     }

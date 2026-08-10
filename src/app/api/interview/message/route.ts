@@ -6,7 +6,13 @@ import * as repo from "@/lib/db/repository";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+/**
+ * A turn makes up to four model calls in sequence, and each is allowed to take
+ * the time it needs rather than being cut short — an aborted extraction costs
+ * the turn its evidence. 300s is the Fluid Compute ceiling on Vercel's Hobby
+ * plan; lower this if the deployment target allows less.
+ */
+export const maxDuration = 300;
 
 /** §24 — one interview turn. Guarded by a per-session processing lock. */
 export async function POST(request: Request): Promise<NextResponse> {

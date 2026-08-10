@@ -14,6 +14,12 @@ export const MAX_QUOTE_CHARS = 120;
 export const FUZZY_THRESHOLD = 0.85;
 /** Rejecting this many items in one turn triggers a single Call A repair (§9.1-5). */
 export const REPAIR_TRIGGER_REJECTIONS = 3;
+/**
+ * An answer at least this long should yield something quotable. Below it, an
+ * empty extraction is a fair reading of the answer ("特にないです") rather than a
+ * failure worth re-running.
+ */
+export const MIN_SUBSTANTIVE_ANSWER_CHARS = 20;
 
 export type QuoteRejectionReason = "too_short" | "too_long" | "not_grounded";
 
@@ -90,9 +96,23 @@ export function verifyEvidenceQuotes(
     }
   }
 
+  // A turn that yields nothing teaches the model nothing, so an empty result on
+  // a real answer is treated as a failed extraction and re-run — not accepted
+  // as "this answer contained no evidence". Without this the interview can run
+  // its full length and still finish with an empty model.
+  const answerIsSubstantive =
+    [...utterance.trim()].length >= MIN_SUBSTANTIVE_ANSWER_CHARS;
+  const extractedNothing = accepted.length === 0 && answerIsSubstantive;
+
+  if (extractedNothing) {
+    console.warn(
+      `[quoteVerifier] no grounded evidence from a ${[...utterance.trim()].length}-char answer — requesting re-extraction`
+    );
+  }
+
   return {
     accepted,
     rejected,
-    shouldRepair: rejected.length >= REPAIR_TRIGGER_REJECTIONS,
+    shouldRepair: rejected.length >= REPAIR_TRIGGER_REJECTIONS || extractedNothing,
   };
 }
