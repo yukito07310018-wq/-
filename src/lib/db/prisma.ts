@@ -5,6 +5,17 @@ const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
 
+/**
+ * Interactive transactions default to a 5s budget, which is measured in wall
+ * clock time and therefore spent mostly on network round trips once the
+ * database is not on localhost. A turn's writes are batched (see persistTurn)
+ * so they no longer need anywhere near this much, but the ceiling is raised as
+ * well: exceeding it aborts the transaction with P2028 and costs the user their
+ * answer, which is a far worse outcome than a slow request.
+ */
+export const TRANSACTION_TIMEOUT_MS = 20_000;
+export const TRANSACTION_MAX_WAIT_MS = 10_000;
+
 function createClient(): PrismaClient {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
@@ -13,7 +24,13 @@ function createClient(): PrismaClient {
     // says nothing about the variable that is actually missing.
     throw new Error("DATABASE_URL is not set.");
   }
-  return new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
+  return new PrismaClient({
+    adapter: new PrismaPg({ connectionString }),
+    transactionOptions: {
+      timeout: TRANSACTION_TIMEOUT_MS,
+      maxWait: TRANSACTION_MAX_WAIT_MS,
+    },
+  });
 }
 
 let client: PrismaClient | undefined;

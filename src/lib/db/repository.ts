@@ -22,6 +22,13 @@ import type {
 const SESSION_ID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const newSessionId = customAlphabet(SESSION_ID_ALPHABET, 21);
 
+/**
+ * Ids for rows this module inserts. Assigning them here rather than letting the
+ * database generate them is what allows a turn's inserts to be batched: nothing
+ * in the batch has to wait for an id produced by an earlier statement.
+ */
+const newRowId = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 24);
+
 function parseStringArray(raw: string): string[] {
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -57,9 +64,12 @@ function asProbeKind(value: string): ProbeKind {
 /** Creates a session and its 100 element rows in a single transaction (§27). */
 export async function createSession(): Promise<string> {
   const id = newSessionId();
-  await prisma.$transaction(async (tx) => {
-    await tx.session.create({ data: { id } });
-    await tx.elementState.createMany({
+  // Batched rather than interactive for the same reason as persistTurn: neither
+  // statement depends on the other's result, so there is nothing to gain from
+  // paying a round trip between them.
+  await prisma.$transaction([
+    prisma.session.create({ data: { id } }),
+    prisma.elementState.createMany({
       data: ELEMENT_IDS.map((elementId) => ({
         sessionId: id,
         elementId,
@@ -70,8 +80,8 @@ export async function createSession(): Promise<string> {
         evidenceTypes: "[]",
         lastUpdatedTurn: 0,
       })),
-    });
-  });
+    }),
+  ]);
   return id;
 }
 
@@ -91,13 +101,31 @@ export async function getSession(sessionId: string): Promise<SessionRecord | nul
 }
 
 /**
+ * How long a held lock is trusted before another request may take it over.
+ * Must exceed the longest legitimate turn — the route caps itself at
+ * `maxDuration = 120s`, so nothing honest is still running after this.
+ */
+export const SESSION_LOCK_TTL_MS = 180_000;
+
+/**
  * Claims the session for processing (§24 idempotency).
  * Returns false when another request already holds it — the conditional update
  * makes this atomic, so two concurrent POSTs cannot both win.
+ *
+ * The lock is released in a `finally`, but that only runs if the process
+ * survives: a serverless invocation killed mid-turn leaves `processing` set
+ * with nobody to clear it, and without an expiry the session would answer
+ * SESSION_BUSY forever. `updatedAt` is maintained by Prisma on every write to
+ * the row, so a lock whose row has gone untouched for the TTL is stale by
+ * definition and can be taken over.
  */
 export async function acquireSessionLock(sessionId: string): Promise<boolean> {
+  const staleBefore = new Date(Date.now() - SESSION_LOCK_TTL_MS);
   const result = await prisma.session.updateMany({
-    where: { id: sessionId, processing: false },
+    where: {
+      id: sessionId,
+      OR: [{ processing: false }, { updatedAt: { lt: staleBefore } }],
+    },
     data: { processing: true },
   });
   return result.count === 1;
@@ -290,39 +318,50 @@ export interface PersistTurnInput {
 /**
  * Persists one turn's model update atomically.
  *
- * Evidence rows get their DB-generated ids here; the provisional ids used by the
- * engine are translated so contradictions and score histories keep pointing at
- * the right rows.
+ * Written as a *batched* transaction rather than an interactive one. The
+ * interactive form issues one round trip per statement, and a turn at the
+ * §9.2 intake limits produces 33 of them (8 evidence + 6 state updates + 6
+ * score histories + 10 axis snapshots + bookkeeping). Against a hosted
+ * database those round trips alone exceed the transaction budget — the
+ * transaction expires mid-write with P2028 and the user loses the answer they
+ * just typed. Batching sends the whole turn as one unit of work, so cost stops
+ * scaling with round-trip latency.
+ *
+ * Row ids are assigned up front so that no statement depends on the result of
+ * an earlier one; the provisional ids used by the engine are translated so
+ * contradictions and score histories keep pointing at the right rows.
  */
 export async function persistTurn(input: PersistTurnInput): Promise<void> {
   const { sessionId, turn } = input;
 
-  await prisma.$transaction(async (tx) => {
-    const idMap = new Map<string, string>();
+  const idMap = new Map<string, string>(input.evidence.map((e) => [e.evidence_id, newRowId()]));
+  const mapId = (provisional: string) => idMap.get(provisional) ?? provisional;
 
-    for (const e of input.evidence) {
-      const created = await tx.evidence.create({
-        data: {
-          sessionId,
-          turnId: e.turn_id,
-          elementId: e.element_id,
-          quote: e.quote,
-          type: e.type,
-          strength: e.strength,
-          reliability: e.reliability,
-          direction: e.direction,
-          context: e.context,
-        },
-        select: { id: true },
-      });
-      idMap.set(e.evidence_id, created.id);
+  // ScoreHistory is keyed by ElementState.id, so the id of each row has to be
+  // known before the batch is assembled. Read outside the transaction: it is a
+  // single query and it does not need to be part of the atomic write.
+  const stateRows = await prisma.elementState.findMany({
+    where: { sessionId },
+    select: { id: true, elementId: true },
+  });
+  const stateIdByElement = new Map(stateRows.map((r) => [r.elementId, r.id]));
+
+  const stateUpdates = [];
+  const historyRows = [];
+
+  for (const [elementId, state] of input.changedStates) {
+    const stateId = stateIdByElement.get(elementId);
+    if (!stateId) {
+      // The 100 rows are created with the session, so this only happens if the
+      // element model gained an element after this session started. Skipping
+      // costs one element's history; aborting would cost the whole turn.
+      console.warn(`[repository] no ElementState row for ${elementId} — skipping`);
+      continue;
     }
 
-    const mapId = (provisional: string) => idMap.get(provisional) ?? provisional;
-
-    for (const [elementId, state] of input.changedStates) {
-      const updated = await tx.elementState.update({
-        where: { sessionId_elementId: { sessionId, elementId } },
+    stateUpdates.push(
+      prisma.elementState.update({
+        where: { id: stateId },
         data: {
           score: state.score,
           confidence: state.confidence,
@@ -331,58 +370,72 @@ export async function persistTurn(input: PersistTurnInput): Promise<void> {
           evidenceTypes: serializeStringArray(state.evidence_type_set),
           lastUpdatedTurn: state.last_updated_turn,
         },
-        select: { id: true },
-      });
+      })
+    );
 
-      const latest = state.history[state.history.length - 1];
-      if (latest && latest.turn === turn) {
-        await tx.scoreHistory.create({
-          data: {
-            elementStateId: updated.id,
-            turn: latest.turn,
-            score: latest.score,
-            confidence: latest.confidence,
-            delta: latest.delta,
-            causeEvidenceIds: serializeStringArray(latest.cause_evidence_ids.map(mapId)),
-          },
-        });
-      }
-    }
-
-    for (const c of input.newContradictions) {
-      await tx.contradiction.create({
-        data: {
-          sessionId,
-          elementIds: serializeStringArray(c.elements),
-          evidenceAId: mapId(c.evidence_a),
-          evidenceBId: mapId(c.evidence_b),
-          severity: c.severity,
-          status: c.status,
-          detectedTurn: c.detected_turn,
-        },
+    const latest = state.history[state.history.length - 1];
+    if (latest && latest.turn === turn) {
+      historyRows.push({
+        elementStateId: stateId,
+        turn: latest.turn,
+        score: latest.score,
+        confidence: latest.confidence,
+        delta: latest.delta,
+        causeEvidenceIds: serializeStringArray(latest.cause_evidence_ids.map(mapId)),
       });
     }
+  }
 
-    for (const r of input.resolutions) {
-      await tx.contradiction.updateMany({
+  const evidenceRows = input.evidence.map((e) => ({
+    id: mapId(e.evidence_id),
+    sessionId,
+    turnId: e.turn_id,
+    elementId: e.element_id,
+    quote: e.quote,
+    type: e.type,
+    strength: e.strength,
+    reliability: e.reliability,
+    direction: e.direction,
+    context: e.context,
+  }));
+
+  const contradictionRows = input.newContradictions.map((c) => ({
+    sessionId,
+    elementIds: serializeStringArray(c.elements),
+    evidenceAId: mapId(c.evidence_a),
+    evidenceBId: mapId(c.evidence_b),
+    severity: c.severity,
+    status: c.status,
+    detectedTurn: c.detected_turn,
+  }));
+
+  await prisma.$transaction([
+    ...(evidenceRows.length > 0 ? [prisma.evidence.createMany({ data: evidenceRows })] : []),
+    ...stateUpdates,
+    ...(historyRows.length > 0 ? [prisma.scoreHistory.createMany({ data: historyRows })] : []),
+    ...(contradictionRows.length > 0
+      ? [prisma.contradiction.createMany({ data: contradictionRows })]
+      : []),
+    ...input.resolutions.map((r) =>
+      prisma.contradiction.updateMany({
         where: { id: r.contradiction_id, sessionId },
         data: { status: "resolved", resolutionNote: r.resolution_note },
-      });
-    }
-
-    for (const axis of input.axes) {
-      await tx.axisSnapshot.create({
-        data: {
-          sessionId,
-          turn,
-          axisId: axis.axis_id,
-          score: axis.score,
-          confidence: axis.confidence,
-          coverage: axis.coverage,
-        },
-      });
-    }
-
-    await tx.session.update({ where: { id: sessionId }, data: { turnCount: turn } });
-  });
+      })
+    ),
+    ...(input.axes.length > 0
+      ? [
+          prisma.axisSnapshot.createMany({
+            data: input.axes.map((axis) => ({
+              sessionId,
+              turn,
+              axisId: axis.axis_id,
+              score: axis.score,
+              confidence: axis.confidence,
+              coverage: axis.coverage,
+            })),
+          }),
+        ]
+      : []),
+    prisma.session.update({ where: { id: sessionId }, data: { turnCount: turn } }),
+  ]);
 }
