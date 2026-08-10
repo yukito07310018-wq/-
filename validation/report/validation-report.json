@@ -1,0 +1,365 @@
+{
+  "generated_by": "npm run validate",
+  "findings": [
+    {
+      "id": "E1",
+      "question": "30ターンの対話で、設定した真の特性値を復元できるか",
+      "verdict": "warn",
+      "headline": "真値との相関 r=0.458、RMSE=15.8点。「常に50と答えるモデル」のRMSE=17.7点。",
+      "metrics": {
+        "pearson_r": 0.458,
+        "r_squared": 0.21,
+        "rmse": 15.79,
+        "rmse_constant_baseline": 17.72,
+        "bias": -0.65,
+        "saturation_rate": 0,
+        "measured_elements_per_run": 90,
+        "evidence_per_element": 2,
+        "n": 2160
+      }
+    },
+    {
+      "id": "E2",
+      "question": "証拠を増やすほど推定は真値に近づくか（一致性）",
+      "verdict": "fail",
+      "headline": "証拠が1要素あたり3.8件→120件に増えると、現行式のRMSEは15.6点→27点と**悪化**し、36%の要素が0か100に貼り付く。同じ証拠を事後平均式で読むと15.2点→4.7点に改善する。ただし順位相関は0.911を保つので、壊れているのは目盛りであって並び順ではない。",
+      "metrics": {
+        "rmse_at_min_evidence": 15.6,
+        "rmse_at_max_evidence": 27,
+        "saturation_at_max_evidence": 0.359,
+        "rank_correlation_at_max_evidence": 0.911,
+        "posterior_rmse_at_max_evidence": 4.7,
+        "confidence_at_max_evidence": 0
+      },
+      "detail": {
+        "rows": [
+          {
+            "turns": 5,
+            "evidence_per_element": 3.8,
+            "current_rmse": 15.6,
+            "current_r": 0.657,
+            "current_rank_r": 0.647,
+            "current_saturation": 0,
+            "posterior_rmse": 15.2,
+            "posterior_r": 0.677,
+            "mean_confidence": 0.256
+          },
+          {
+            "turns": 10,
+            "evidence_per_element": 7.5,
+            "current_rmse": 14.3,
+            "current_r": 0.768,
+            "current_rank_r": 0.761,
+            "current_saturation": 0,
+            "posterior_rmse": 13.1,
+            "posterior_r": 0.778,
+            "mean_confidence": 0.264
+          },
+          {
+            "turns": 20,
+            "evidence_per_element": 15,
+            "current_rmse": 18.2,
+            "current_r": 0.859,
+            "current_rank_r": 0.842,
+            "current_saturation": 0.188,
+            "posterior_rmse": 10.3,
+            "posterior_r": 0.871,
+            "mean_confidence": 0.171
+          },
+          {
+            "turns": 40,
+            "evidence_per_element": 30,
+            "current_rmse": 25.9,
+            "current_r": 0.839,
+            "current_rank_r": 0.89,
+            "current_saturation": 0.438,
+            "posterior_rmse": 8.4,
+            "posterior_r": 0.918,
+            "mean_confidence": 0.048
+          },
+          {
+            "turns": 80,
+            "evidence_per_element": 60,
+            "current_rmse": 27.4,
+            "current_r": 0.843,
+            "current_rank_r": 0.875,
+            "current_saturation": 0.453,
+            "posterior_rmse": 6.2,
+            "posterior_r": 0.954,
+            "mean_confidence": 0.009
+          },
+          {
+            "turns": 160,
+            "evidence_per_element": 120,
+            "current_rmse": 27,
+            "current_r": 0.85,
+            "current_rank_r": 0.911,
+            "current_saturation": 0.359,
+            "posterior_rmse": 4.7,
+            "posterior_r": 0.974,
+            "mean_confidence": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "E3",
+      "question": "Confidenceが高いほど推定は正確か（キャリブレーション）",
+      "verdict": "warn",
+      "headline": "単調ではない。誤差はConfidence 0.2–0.4 の帯で最小（平均12.8点、n=211）になり、それより高い帯ではむしろ増える（0.4–0.6帯で17点/n=47、0.6–0.8帯で18.9点/n=8、0.8–1.0帯で8点/n=1）。そもそもConfidenceが0.4以上に達したサンプルは全体の7%しかなく、「Confidenceが高い＝信頼してよい」という画面上の約束は、実際にはほとんど検証されない領域にある。",
+      "metrics": {
+        "confidence_error_correlation": -0.294,
+        "monotone_decreasing": 0,
+        "lowest_error_bin": "0.2–0.4",
+        "lowest_error_value": 12.8,
+        "share_confidence_above_0_4": 0.07,
+        "n": 800
+      },
+      "detail": {
+        "bins": [
+          {
+            "confidence_bin": "0.0–0.2",
+            "n": 533,
+            "mean_confidence": 0.034,
+            "mean_abs_error": 21.5
+          },
+          {
+            "confidence_bin": "0.2–0.4",
+            "n": 211,
+            "mean_confidence": 0.276,
+            "mean_abs_error": 12.8
+          },
+          {
+            "confidence_bin": "0.4–0.6",
+            "n": 47,
+            "mean_confidence": 0.477,
+            "mean_abs_error": 17
+          },
+          {
+            "confidence_bin": "0.6–0.8",
+            "n": 8,
+            "mean_confidence": 0.623,
+            "mean_abs_error": 18.9
+          },
+          {
+            "confidence_bin": "0.8–1.0",
+            "n": 1,
+            "mean_confidence": 0.938,
+            "mean_abs_error": 8
+          }
+        ]
+      }
+    },
+    {
+      "id": "E4",
+      "question": "同じ回答を別の順序で聞いたとき、同じ結果になるか",
+      "verdict": "warn",
+      "headline": "同じ要素を繰り返し聞く条件では、質問順を入れ替えるだけで要素スコアが平均1.43点、最大4.4点動く（40通りの順列）。一方、現行アプリの「1要素につき1回だけ聞く」条件では差は0点で、順序不変が成立する。",
+      "metrics": {
+        "mean_abs_difference": 1.434,
+        "mean_max_difference": 4.42,
+        "worst_max_difference": 9.18,
+        "mean_rank_correlation": 0.9778,
+        "breadth_first_difference": 0
+      }
+    },
+    {
+      "id": "E5",
+      "question": "同じ人が2回受けたとき、同じ診断結果になるか（再検査信頼性）",
+      "verdict": "fail",
+      "headline": "同一人物の2回の診断の相関 r=0.229、同一要素で平均8.8点の差。心理測定の慣行では個人について語るのに r≥0.7 が要る。",
+      "metrics": {
+        "test_retest_r": 0.229,
+        "mean_abs_difference": 8.78,
+        "sd_of_r": 0.13,
+        "personas": 24
+      }
+    },
+    {
+      "id": "E6",
+      "question": "異なる人物を、軸レベルで区別できるか（弁別的妥当性）",
+      "verdict": "pass",
+      "headline": "軸レベルでは区別できている。ICC(1)=0.774、軸の真値との相関 r=0.973。ただし出力の幅が狭い：真値の標準偏差22.4点に対し出力は4.19点で、約5.4倍に圧縮されている（10軸すべてが44〜56.1点の範囲に収まる）。",
+      "metrics": {
+        "icc1": 0.774,
+        "axis_truth_correlation": 0.973,
+        "axis_score_sd": 4.19,
+        "truth_axis_sd": 22.44,
+        "compression_factor": 5.35,
+        "axis_score_min": 44,
+        "axis_score_max": 56.1,
+        "groups": 50
+      }
+    },
+    {
+      "id": "E7",
+      "question": "手で決めた定数（12・±15・0.5・κ）に結果はどれだけ依存するか",
+      "verdict": "pass",
+      "headline": "定数を±25%動かすと要素スコアは平均最大4.8点ずれる。順位相関は最低0.993なので、順位はほぼ保たれるが絶対値は保たれない。",
+      "metrics": {
+        "worst_mean_abs_shift": 4.8,
+        "worst_rank_correlation": 0.993,
+        "kappa_max_axis_shift": 0.78
+      },
+      "detail": {
+        "rows": [
+          {
+            "variant": "scale 12→9",
+            "rank_correlation_vs_default": 0.993,
+            "mean_abs_score_shift": 4.8
+          },
+          {
+            "variant": "scale 12→15",
+            "rank_correlation_vs_default": 0.993,
+            "mean_abs_score_shift": 3.1
+          },
+          {
+            "variant": "cap 15→11",
+            "rank_correlation_vs_default": 0.998,
+            "mean_abs_score_shift": 1.1
+          },
+          {
+            "variant": "cap 15→19",
+            "rank_correlation_vs_default": 1,
+            "mean_abs_score_shift": 0.1
+          },
+          {
+            "variant": "damping 0.5→0.3",
+            "rank_correlation_vs_default": 0.996,
+            "mean_abs_score_shift": 2.2
+          },
+          {
+            "variant": "damping 0.5→0.7",
+            "rank_correlation_vs_default": 0.995,
+            "mean_abs_score_shift": 2.4
+          }
+        ],
+        "kappa": [
+          {
+            "kappa": 0.25,
+            "mean_abs_axis_shift": 0.27
+          },
+          {
+            "kappa": 0.5,
+            "mean_abs_axis_shift": 0
+          },
+          {
+            "kappa": 1,
+            "mean_abs_axis_shift": 0.37
+          },
+          {
+            "kappa": 2,
+            "mean_abs_axis_shift": 0.78
+          }
+        ]
+      }
+    },
+    {
+      "id": "E8",
+      "question": "更新式を替えれば直るのか、それとも証拠量が足りないのか",
+      "verdict": "warn",
+      "headline": "現行アプリの設定（30ターン・1要素あたり証拠2件）では、現行式 RMSE=15.8点に対し 事後平均式は 16.5点で、ほぼ変わらない。つまりこの条件で効いているのは更新式ではなく証拠量の不足であり、式を直しても30ターンのままでは要素スコアは改善しない（E2は証拠が増えた場合を示す）。",
+      "metrics": {
+        "current_r": 0.428,
+        "current_rmse": 15.82,
+        "posterior_r": 0.432,
+        "posterior_rmse": 16.54,
+        "rmse_reduction_points": -0.72
+      }
+    },
+    {
+      "id": "E9",
+      "question": "抽出側がわずかに肯定寄りだと、結果はどれだけ動くか",
+      "verdict": "pass",
+      "headline": "抽出が20ポイント肯定に傾くと、平均スコアは49.9点→53.8点、真値からの偏りは0.1点→4.1点になる。",
+      "metrics": {
+        "bias_at_zero": 0.1,
+        "bias_at_20pt_tilt": 4.1,
+        "amplification": 0.2
+      },
+      "detail": {
+        "rows": [
+          {
+            "extractor_positive_bias": 0,
+            "mean_score": 49.9,
+            "bias_points": 0.1,
+            "rmse": 15.7,
+            "r": 0.432
+          },
+          {
+            "extractor_positive_bias": 0.05,
+            "mean_score": 51,
+            "bias_points": 1.2,
+            "rmse": 15.6,
+            "r": 0.443
+          },
+          {
+            "extractor_positive_bias": 0.1,
+            "mean_score": 51.9,
+            "bias_points": 2.1,
+            "rmse": 15.7,
+            "r": 0.447
+          },
+          {
+            "extractor_positive_bias": 0.2,
+            "mean_score": 53.8,
+            "bias_points": 4.1,
+            "rmse": 15.7,
+            "r": 0.476
+          }
+        ]
+      }
+    },
+    {
+      "id": "E10",
+      "question": "証拠が増えるとConfidenceは上がるのか、下がるのか",
+      "verdict": "fail",
+      "headline": "Confidenceは証拠7.5件で0.2686に達したあと下降し、60件では0.0009まで落ちる。原因は矛盾ペナルティの累乗で、1要素あたりの未解決矛盾が100.7件に増えるため。矛盾は positive×negative の総当たりで生成されるので証拠件数の2乗で増え、ペナルティ (1−0.25·severity) がその回数だけ掛かる。結果として「終了条件 conf ≥ 0.75」は対話を延ばすほど遠のく。",
+      "metrics": {
+        "peak_confidence": 0.2686,
+        "peak_at_evidence_per_element": 7.5,
+        "final_confidence": 0.0009,
+        "final_unresolved_per_element": 100.7
+      },
+      "detail": {
+        "rows": [
+          {
+            "turns": 5,
+            "evidence_per_element": 3.8,
+            "unresolved_contradictions_per_element": 0.5,
+            "mean_confidence": 0.2569,
+            "max_confidence": 0.4295
+          },
+          {
+            "turns": 10,
+            "evidence_per_element": 7.5,
+            "unresolved_contradictions_per_element": 2.1,
+            "mean_confidence": 0.2686,
+            "max_confidence": 0.5061
+          },
+          {
+            "turns": 20,
+            "evidence_per_element": 15,
+            "unresolved_contradictions_per_element": 8.3,
+            "mean_confidence": 0.1195,
+            "max_confidence": 0.6031
+          },
+          {
+            "turns": 40,
+            "evidence_per_element": 30,
+            "unresolved_contradictions_per_element": 29.3,
+            "mean_confidence": 0.0561,
+            "max_confidence": 0.7419
+          },
+          {
+            "turns": 80,
+            "evidence_per_element": 60,
+            "unresolved_contradictions_per_element": 100.7,
+            "mean_confidence": 0.0009,
+            "max_confidence": 0.0268
+          }
+        ]
+      }
+    }
+  ]
+}
