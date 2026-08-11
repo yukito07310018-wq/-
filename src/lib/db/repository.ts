@@ -102,10 +102,14 @@ export async function getSession(sessionId: string): Promise<SessionRecord | nul
 
 /**
  * How long a held lock is trusted before another request may take it over.
- * Must exceed the longest legitimate turn — the route caps itself at
- * `maxDuration = 120s`, so nothing honest is still running after this.
+ *
+ * MUST stay above the interview route's `maxDuration` (300s). The takeover
+ * exists to recover locks left behind by a killed invocation, so the window has
+ * to be longer than any turn that is still legitimately running — otherwise a
+ * slow but healthy turn has its lock stolen and the same session is processed
+ * twice at once. `tests/sessionLock.test.ts` pins the relationship.
  */
-export const SESSION_LOCK_TTL_MS = 180_000;
+export const SESSION_LOCK_TTL_MS = 360_000;
 
 /**
  * Claims the session for processing (§24 idempotency).

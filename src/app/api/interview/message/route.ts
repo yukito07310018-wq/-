@@ -9,8 +9,14 @@ export const dynamic = "force-dynamic";
 /**
  * A turn makes up to four model calls in sequence, and each is allowed to take
  * the time it needs rather than being cut short — an aborted extraction costs
- * the turn its evidence. 300s is the Fluid Compute ceiling on Vercel's Hobby
- * plan; lower this if the deployment target allows less.
+ * the turn its evidence.
+ *
+ * 300s is the Hobby ceiling on Vercel *with Fluid Compute enabled*. Without it
+ * Hobby rejects anything above 60 and the deployment fails outright, so enable
+ * Fluid Compute (free) or lower this value to 60.
+ *
+ * SESSION_LOCK_TTL_MS must stay above whatever this is set to — see the note on
+ * that constant.
  */
 export const maxDuration = 300;
 
