@@ -20,35 +20,36 @@ const met = {
 describe("evaluateTermination", () => {
   it("keeps going below the 10-turn floor even when quality targets are met", () => {
     for (let turn = 1; turn < MIN_TURNS; turn++) {
-      const decision = evaluateTermination({ turn, ...met });
+      const decision = evaluateTermination({ productiveTurns: turn, totalTurns: turn, ...met });
       expect(decision.shouldComplete).toBe(false);
     }
   });
 
   it("completes once the floor is reached and quality is met", () => {
-    const decision = evaluateTermination({ turn: MIN_TURNS, ...met });
+    const decision = evaluateTermination({ productiveTurns: MIN_TURNS, totalTurns: MIN_TURNS, ...met });
     expect(decision.shouldComplete).toBe(true);
     expect(decision.reason).toBe("quality_met");
   });
 
   it("does not complete when confidence is short", () => {
-    const decision = evaluateTermination({ turn: 12, ...met, meanConfidence: 0.5 });
+    const decision = evaluateTermination({ productiveTurns: 12, totalTurns: 12, ...met, meanConfidence: 0.5 });
     expect(decision.shouldComplete).toBe(false);
   });
 
   it("does not complete when coverage is short", () => {
-    const decision = evaluateTermination({ turn: 12, ...met, overallCoverage: 0.4 });
+    const decision = evaluateTermination({ productiveTurns: 12, totalTurns: 12, ...met, overallCoverage: 0.4 });
     expect(decision.shouldComplete).toBe(false);
   });
 
   it("does not complete with too many unresolved contradictions", () => {
-    const decision = evaluateTermination({ turn: 12, ...met, unresolvedContradictions: 4 });
+    const decision = evaluateTermination({ productiveTurns: 12, totalTurns: 12, ...met, unresolvedContradictions: 4 });
     expect(decision.shouldComplete).toBe(false);
   });
 
   it("force-completes at 30 turns regardless of quality", () => {
     const decision = evaluateTermination({
-      turn: MAX_TURNS,
+      productiveTurns: MAX_TURNS,
+      totalTurns: MAX_TURNS,
       meanConfidence: 0.1,
       overallCoverage: 0.1,
       unresolvedContradictions: 12,
@@ -60,7 +61,8 @@ describe("evaluateTermination", () => {
 
   it("completes on saturation past the floor", () => {
     const decision = evaluateTermination({
-      turn: 14,
+      productiveTurns: 14,
+      totalTurns: 14,
       meanConfidence: 0.5,
       overallCoverage: 0.4,
       unresolvedContradictions: 0,
@@ -74,7 +76,8 @@ describe("evaluateTermination", () => {
     // Mean confidence rises ~0.002/turn early on, which is under SATURATION_DELTA
     // for reasons that have nothing to do with running out of information.
     const decision = evaluateTermination({
-      turn: 10,
+      productiveTurns: 10,
+      totalTurns: 10,
       meanConfidence: 0.02,
       overallCoverage: 0.08,
       unresolvedContradictions: 4,
@@ -100,18 +103,18 @@ describe("isSaturated", () => {
 
 describe("progress (§30.1)", () => {
   it("is 0 at the start", () => {
-    expect(computeProgress({ turn: 0, meanConfidence: 0, overallCoverage: 0 })).toBe(0);
+    expect(computeProgress({ productiveTurns: 0, meanConfidence: 0, overallCoverage: 0 })).toBe(0);
   });
 
   it("increases monotonically with each component", () => {
-    const base = computeProgress({ turn: 5, meanConfidence: 0.3, overallCoverage: 0.3 });
-    expect(computeProgress({ turn: 9, meanConfidence: 0.3, overallCoverage: 0.3 })).toBeGreaterThan(base);
-    expect(computeProgress({ turn: 5, meanConfidence: 0.6, overallCoverage: 0.3 })).toBeGreaterThan(base);
-    expect(computeProgress({ turn: 5, meanConfidence: 0.3, overallCoverage: 0.6 })).toBeGreaterThan(base);
+    const base = computeProgress({ productiveTurns: 5, meanConfidence: 0.3, overallCoverage: 0.3 });
+    expect(computeProgress({ productiveTurns: 9, meanConfidence: 0.3, overallCoverage: 0.3 })).toBeGreaterThan(base);
+    expect(computeProgress({ productiveTurns: 5, meanConfidence: 0.6, overallCoverage: 0.3 })).toBeGreaterThan(base);
+    expect(computeProgress({ productiveTurns: 5, meanConfidence: 0.3, overallCoverage: 0.6 })).toBeGreaterThan(base);
   });
 
   it("saturates at 1 and never exceeds it", () => {
-    expect(computeProgress({ turn: 99, meanConfidence: 1, overallCoverage: 1 })).toBe(1);
+    expect(computeProgress({ productiveTurns: 99, meanConfidence: 1, overallCoverage: 1 })).toBe(1);
   });
 });
 
@@ -119,5 +122,60 @@ describe("early exit (§29)", () => {
   it("unlocks after 5 turns", () => {
     expect(canExitEarly(4)).toBe(false);
     expect(canExitEarly(5)).toBe(true);
+  });
+});
+
+/**
+ * A turn the analyst read nothing out of has not advanced the model. Counting
+ * it would let an interview reach its minimum length, fill its progress bar and
+ * finish "complete" on evidence it never gathered.
+ */
+describe("turns that produced no evidence", () => {
+  it("earns no progress", () => {
+    const before = computeProgress({
+      productiveTurns: 4,
+      meanConfidence: 0.2,
+      overallCoverage: 0.2,
+    });
+    // A fifth turn was taken but yielded nothing: productiveTurns stays at 4.
+    const after = computeProgress({
+      productiveTurns: 4,
+      meanConfidence: 0.2,
+      overallCoverage: 0.2,
+    });
+    expect(after).toBe(before);
+  });
+
+  it("does not count toward the minimum length", () => {
+    // 20 turns taken, only 9 of them productive — still short of the floor.
+    const decision = evaluateTermination({
+      productiveTurns: MIN_TURNS - 1,
+      totalTurns: 20,
+      ...met,
+    });
+    expect(decision.shouldComplete).toBe(false);
+  });
+
+  it("still lets the hard ceiling end the interview", () => {
+    // Extraction has failed all the way through; the interview must not run on.
+    const decision = evaluateTermination({
+      productiveTurns: 0,
+      totalTurns: MAX_TURNS,
+      ...met,
+      meanConfidence: 0,
+      overallCoverage: 0,
+    });
+    expect(decision.shouldComplete).toBe(true);
+    expect(decision.reason).toBe("max_turns");
+  });
+
+  it("reaches the floor on productive turns regardless of how many were taken", () => {
+    const decision = evaluateTermination({
+      productiveTurns: MIN_TURNS,
+      totalTurns: MIN_TURNS + 7,
+      ...met,
+    });
+    expect(decision.shouldComplete).toBe(true);
+    expect(decision.reason).toBe("quality_met");
   });
 });

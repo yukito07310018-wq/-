@@ -31,12 +31,23 @@ export type TerminationReason =
   | null;
 
 export interface TerminationInput {
-  turn: number;
+  /**
+   * Turns that produced evidence. The floor and the quality gates count these,
+   * so an interview cannot reach its minimum length on turns that taught the
+   * model nothing.
+   */
+  productiveTurns: number;
+  /**
+   * Every turn taken, productive or not. Only the hard ceiling uses this: if
+   * extraction keeps coming back empty the interview must still end rather than
+   * ask questions forever.
+   */
+  totalTurns: number;
   meanConfidence: number;
   overallCoverage: number;
-  unresolvedContradictions: number;
-  /** Mean confidence at the end of each past turn, oldest first. */
+  /** Mean confidence at the end of each productive turn, oldest first. */
   meanConfidenceHistory: readonly number[];
+  unresolvedContradictions: number;
 }
 
 export interface TerminationDecision {
@@ -45,10 +56,12 @@ export interface TerminationDecision {
 }
 
 export function evaluateTermination(input: TerminationInput): TerminationDecision {
-  if (input.turn >= MAX_TURNS) {
+  // Counted over every turn, so a session whose extraction keeps failing still
+  // terminates instead of asking indefinitely.
+  if (input.totalTurns >= MAX_TURNS) {
     return { shouldComplete: true, reason: "max_turns" };
   }
-  if (input.turn < MIN_TURNS) {
+  if (input.productiveTurns < MIN_TURNS) {
     return { shouldComplete: false, reason: null };
   }
 

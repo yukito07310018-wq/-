@@ -257,8 +257,17 @@ export async function loadConversation(
   return limit ? mapped.slice(-limit) : mapped;
 }
 
-/** Mean confidence at the end of each past turn, for the saturation check (§33). */
-export async function loadMeanConfidenceHistory(sessionId: string): Promise<number[]> {
+export interface ConfidencePoint {
+  turn: number;
+  meanConfidence: number;
+}
+
+/**
+ * Mean confidence at the end of each past turn, for the saturation check (§33).
+ * Tagged with the turn so the caller can drop turns that produced no evidence —
+ * those flatten the curve without meaning the model has saturated.
+ */
+export async function loadMeanConfidenceHistory(sessionId: string): Promise<ConfidencePoint[]> {
   const rows = await prisma.axisSnapshot.findMany({
     where: { sessionId },
     orderBy: { turn: "asc" },
@@ -272,7 +281,10 @@ export async function loadMeanConfidenceHistory(sessionId: string): Promise<numb
   }
   return [...byTurn.entries()]
     .sort((a, b) => a[0] - b[0])
-    .map(([, values]) => values.reduce((s, v) => s + v, 0) / values.length);
+    .map(([turn, values]) => ({
+      turn,
+      meanConfidence: values.reduce((s, v) => s + v, 0) / values.length,
+    }));
 }
 
 /* -------------------------------------------------------------------------- */

@@ -71,6 +71,12 @@ export async function processTurn(sessionId: string, message: string): Promise<T
 
   await repo.saveConversationTurn(sessionId, turn, "user", message);
 
+  // Turns that put evidence into the model. The turn *number* still advances on
+  // every answer — conversation rows are keyed by it — but a turn the analyst
+  // read nothing out of has not moved the diagnosis, so it earns no progress and
+  // does not count toward the length the interview needs before it may finish.
+  const productiveTurnIds = new Set(priorEvidence.map((e) => e.turn_id));
+
   // --- safety gate (§34.2) — before any extraction --------------------------
   const distress = await checkDistress(message, deadline);
   if (distress.level === "crisis") {
@@ -81,7 +87,7 @@ export async function processTurn(sessionId: string, message: string): Promise<T
       reply,
       turn,
       progress: computeProgress({
-        turn,
+        productiveTurns: productiveTurnIds.size,
         meanConfidence: diagnosisConfidence(states),
         overallCoverage: overallCoverage(aggregateAxes(states)),
       }),
@@ -141,19 +147,33 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     axes: update.axes,
   });
 
+  for (const e of update.newEvidence) productiveTurnIds.add(e.turn_id);
+  const productiveTurns = productiveTurnIds.size;
+
+  if (update.newEvidence.length === 0) {
+    console.warn(
+      `[turnService] turn ${turn} produced no evidence — not counted toward progress or termination`
+    );
+  }
+
   const progress = computeProgress({
-    turn,
+    productiveTurns,
     meanConfidence: update.meanConfidence,
     overallCoverage: update.coverage,
   });
 
   // --- termination (§33) -----------------------------------------------------
   const termination = evaluateTermination({
-    turn,
+    productiveTurns,
+    totalTurns: turn,
     meanConfidence: update.meanConfidence,
     overallCoverage: update.coverage,
     unresolvedContradictions: update.unresolvedContradictions,
-    meanConfidenceHistory: confidenceHistory,
+    // Empty turns would otherwise read as a flat curve and trip the saturation
+    // rule, ending the interview because nothing was learned.
+    meanConfidenceHistory: confidenceHistory
+      .filter((point) => productiveTurnIds.has(point.turn))
+      .map((point) => point.meanConfidence),
   });
 
   if (termination.shouldComplete) {
