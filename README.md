@@ -109,13 +109,36 @@ npm run dev                 # http://localhost:3000
 ### Vercelへのデプロイ
 
 1. VercelプロジェクトのEnvironment Variablesに `DATABASE_URL` と `ANTHROPIC_API_KEY` を設定する
-2. スキーマをDBへ反映する（ビルドはこれを行いません）
+2. **Fluid Compute を有効にする**（Settings → Functions）。Hobbyプランでも無料です
+3. スキーマをDBへ反映する（ビルドはこれを行いません）
 
 ```bash
 DATABASE_URL="postgresql://..." npm run db:migrate
 ```
 
-3. あとは通常どおりpushすればデプロイされる
+4. あとは通常どおりpushすればデプロイされる
+
+#### Fluid Compute が必須な理由
+
+1ターンでLLMを4回**直列に**呼ぶため、リクエストが長く開いたままになります
+（`src/app/api/interview/message/route.ts` の `maxDuration = 300`）。
+
+Fluid Compute の有無で Hobby プランの上限が変わります。
+
+| | 最大 `maxDuration` |
+|---|---|
+| Hobby（Fluidなし） | **60秒**。これを超える値はビルドが失敗する |
+| Hobby（Fluidあり） | **300秒** |
+| Pro（Fluidあり） | 800秒 |
+
+無効のままデプロイすると、実行時エラーではなく
+`Serverless Functions must have a maxDuration between 1 and 60 for plan hobby`
+で**ビルドごと落ちます**。有効にできない場合は `maxDuration` を 60 に下げてください
+（そのときは `SESSION_LOCK_TTL_MS` も併せて見直すこと。`tests/sessionLock.test.ts` が
+両者の関係を検証します）。
+
+抽出が途中で打ち切られるとそのターンの成果が失われるため、
+呼び出しは早めに切らず待つ方針にしています（判断ログ #12）。
 
 `npm run build` は `next build` のみです。以前は `prisma db push --accept-data-loss` を
 含んでいましたが、デプロイのたびに本番DBへ破壊的にスキーマを適用してしまうため外しました。
