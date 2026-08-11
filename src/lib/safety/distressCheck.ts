@@ -63,7 +63,7 @@ export interface DistressResult {
  * conversation is not blocked by an AI outage — the crisis path is a safety net
  * on top of the interview, not a gate the interview depends on.
  */
-export async function checkDistress(answer: string): Promise<DistressResult> {
+export async function checkDistress(answer: string, deadline?: number): Promise<DistressResult> {
   try {
     const result = await callModelStructured({
       label: "distress",
@@ -73,6 +73,7 @@ export async function checkDistress(answer: string): Promise<DistressResult> {
       temperature: DISTRESS_TEMPERATURE,
       prefill: '{"level":',
       schema: DistressCheckSchema,
+      deadline,
     });
     return { level: result.level, reason: result.reason };
   } catch (error) {

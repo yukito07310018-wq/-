@@ -28,10 +28,35 @@ export interface TurnOutcome {
   aborted: boolean;
 }
 
+/**
+ * Wall clock the model calls of one turn may consume between them.
+ *
+ * The route is killed by the platform at `maxDuration` (300s), and a kill is
+ * the worst way to end a turn: the response is not ours, so the client sees a
+ * transport error instead of a message, and the `finally` that releases the
+ * session lock never runs — leaving the session unusable until the lock's TTL
+ * expires. Stopping first means the turn fails as an ordinary 503 that the user
+ * can act on, with the lock released on the way out.
+ *
+ * Individual calls are still allowed to be slow (see CALL_BUDGET_MS); this only
+ * bounds what they add up to.
+ */
+export const TURN_AI_BUDGET_MS = 240_000;
+
 export async function processTurn(sessionId: string, message: string): Promise<TurnOutcome> {
+  // Re-read rather than take the route's copy: the route loads the session
+  // *before* claiming the lock, so between those two steps a concurrent turn can
+  // commit and bump turnCount. Reading here — with the lock held — is the only
+  // point at which the value is stable, and reusing a stale one would overwrite
+  // an already-recorded turn.
   const session = await repo.getSession(sessionId);
   if (!session) throw new SessionNotFoundError();
+  // Status is stale for the same reason: the turn that landed in between may
+  // have been the one that completed or aborted the interview, and appending to
+  // a finished session would push it past MAX_TURNS.
+  if (session.status !== "active") throw new SessionClosedError();
 
+  const deadline = Date.now() + TURN_AI_BUDGET_MS;
   const turn = session.turnCount + 1;
 
   const [states, priorEvidence, priorContradictions, askedQuestions, conversation, confidenceHistory] =
@@ -47,7 +72,7 @@ export async function processTurn(sessionId: string, message: string): Promise<T
   await repo.saveConversationTurn(sessionId, turn, "user", message);
 
   // --- safety gate (§34.2) — before any extraction --------------------------
-  const distress = await checkDistress(message);
+  const distress = await checkDistress(message, deadline);
   if (distress.level === "crisis") {
     const reply = buildCrisisReply();
     await repo.saveConversationTurn(sessionId, turn, "assistant", reply);
@@ -92,7 +117,7 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     conversation,
     recentEvidence: priorEvidence,
     contradictions: priorContradictions,
-  });
+  }, deadline);
 
   // --- deterministic model update (§22-4〜9) --------------------------------
   const update = applyTurn({
@@ -148,6 +173,7 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     askedQuestions,
     conversation,
     bannedKinds,
+    deadline,
   });
 
   // --- reply (§22-15) --------------------------------------------------------
@@ -157,7 +183,7 @@ export async function processTurn(sessionId: string, message: string): Promise<T
       answer: message,
       nextQuestion: nextQuestion.question.text,
       distress: distress.level === "distress",
-    });
+    }, deadline);
   } catch (error) {
     console.error("[turnService] reply call failed, sending question only:", error);
     reply = nextQuestion.question.text;
@@ -183,6 +209,7 @@ interface ChooseQuestionInput {
   askedQuestions: readonly AskedQuestion[];
   conversation: readonly import("../db/repository").ConversationMessage[];
   bannedKinds: readonly string[];
+  deadline: number;
 }
 
 /**
@@ -218,7 +245,8 @@ async function chooseNextQuestion(
           askedQuestions: input.askedQuestions,
           avoidProbeKinds: input.bannedKinds,
         },
-        input.turn
+        input.turn,
+        input.deadline
       );
 
       const selection = selectQuestion(candidates, ctx);
@@ -264,6 +292,13 @@ export class SessionNotFoundError extends Error {
   constructor() {
     super("session not found");
     this.name = "SessionNotFoundError";
+  }
+}
+
+export class SessionClosedError extends Error {
+  constructor() {
+    super("session is no longer active");
+    this.name = "SessionClosedError";
   }
 }
 

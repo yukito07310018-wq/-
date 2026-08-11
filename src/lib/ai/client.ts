@@ -22,8 +22,23 @@ export const REQUEST_TIMEOUT_MS = 90_000;
  * and a struggling call could outlive the request that started it.
  */
 export const CALL_BUDGET_MS = 150_000;
+/**
+ * Below this much remaining budget a fresh attempt is not worth starting: the
+ * request would be dispatched (and its input tokens billed) only to be aborted
+ * moments later.
+ */
+export const MIN_ATTEMPT_SLICE_MS = 5_000;
 export const MAX_TRANSPORT_RETRIES = 2;
 export const MAX_REPAIR_ATTEMPTS = 2;
+
+/**
+ * A call may never outlive its own budget *or* the caller's deadline, whichever
+ * comes first. Taking the caller's deadline alone would let one stalled call
+ * consume a whole turn and starve every call after it.
+ */
+function resolveDeadline(callerDeadline: number | undefined): number {
+  return Math.min(callerDeadline ?? Infinity, Date.now() + CALL_BUDGET_MS);
+}
 
 export class AiUnavailableError extends Error {
   constructor(message: string, readonly cause?: unknown) {
@@ -72,10 +87,19 @@ export interface TokenUsage {
   output: number;
 }
 
+/**
+ * Entries kept in memory. The log is a debugging aid, not an audit trail — it
+ * is never drained, and the process outlives a single request (Fluid Compute
+ * reuses an instance across many), so it is capped rather than left to grow for
+ * the lifetime of the instance.
+ */
+export const USAGE_LOG_LIMIT = 500;
+
 const usageLog: { label: string; usage: TokenUsage; model: string }[] = [];
 
 export function recordUsage(label: string, usage: TokenUsage, model: string): void {
   usageLog.push({ label, usage, model });
+  if (usageLog.length > USAGE_LOG_LIMIT) usageLog.splice(0, usageLog.length - USAGE_LOG_LIMIT);
   console.info(`[ai] ${label} model=${model} in=${usage.input} out=${usage.output}`);
 }
 
@@ -114,12 +138,16 @@ export interface RawCallOptions {
 export async function callModel(options: RawCallOptions): Promise<string> {
   const anthropic = getClient();
   const model = getModelId();
-  const deadline = options.deadline ?? Date.now() + CALL_BUDGET_MS;
+  const deadline = resolveDeadline(options.deadline);
 
   let lastError: unknown;
+  let outOfBudget = false;
   for (let attempt = 0; attempt <= MAX_TRANSPORT_RETRIES; attempt++) {
     const remaining = deadline - Date.now();
-    if (remaining <= 0) break;
+    if (remaining < MIN_ATTEMPT_SLICE_MS) {
+      outOfBudget = true;
+      break;
+    }
 
     const controller = new AbortController();
     // Never wait past the budget, but otherwise let a slow call finish.
@@ -154,6 +182,12 @@ export async function callModel(options: RawCallOptions): Promise<string> {
       lastError = error;
       const retryable = isRetryableStatus(error) || controller.signal.aborted;
       if (!retryable || attempt === MAX_TRANSPORT_RETRIES) break;
+      // An abort caused by the deadline is not a transient fault, so backing
+      // off would only burn budget that has already run out.
+      if (deadline - Date.now() < MIN_ATTEMPT_SLICE_MS) {
+        outOfBudget = true;
+        break;
+      }
       await sleep(1000 * 2 ** attempt);
     } finally {
       clearTimeout(timeout);
@@ -162,6 +196,9 @@ export async function callModel(options: RawCallOptions): Promise<string> {
 
   if (isRateLimit(lastError)) {
     throw new RateLimitedError("AI の利用制限に達しました。少し待ってからお試しください。");
+  }
+  if (outOfBudget) {
+    throw new AiUnavailableError(`${options.label}: 応答待ちの時間が上限に達しました。`, lastError);
   }
   throw new AiUnavailableError("AI への接続に失敗しました。", lastError);
 }
@@ -194,10 +231,10 @@ export interface StructuredCallOptions<T> extends RawCallOptions {
  */
 export async function callModelStructured<T>(options: StructuredCallOptions<T>): Promise<T> {
   let feedback = "";
-  const deadline = options.deadline ?? Date.now() + CALL_BUDGET_MS;
+  const deadline = resolveDeadline(options.deadline);
 
   for (let attempt = 0; attempt <= MAX_REPAIR_ATTEMPTS; attempt++) {
-    if (Date.now() >= deadline) break;
+    if (deadline - Date.now() < MIN_ATTEMPT_SLICE_MS) break;
 
     const raw = await callModel({
       ...options,

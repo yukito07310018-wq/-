@@ -42,5 +42,6 @@ export function toApiError(error: unknown, context: string): NextResponse {
   if (name === "RateLimitedError") return apiError("RATE_LIMITED");
   if (name === "AiUnavailableError") return apiError("AI_UNAVAILABLE");
   if (name === "SessionNotFoundError") return apiError("SESSION_NOT_FOUND");
+  if (name === "SessionClosedError") return apiError("SESSION_CLOSED");
   return apiError("INTERNAL");
 }

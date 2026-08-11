@@ -25,7 +25,8 @@ export const MAX_QUESTION_CHARS = 120;
  */
 export async function runInterviewerCall(
   input: InterviewerPromptInput,
-  turn: number
+  turn: number,
+  deadline?: number
 ): Promise<QuestionCandidate[]> {
   const result = await callModelStructured({
     label: "interviewer",
@@ -35,6 +36,7 @@ export async function runInterviewerCall(
     temperature: INTERVIEWER_TEMPERATURE,
     prefill: '{"questions":',
     schema: QuestionGenerationSchema,
+    deadline,
   });
 
   const banned = new Set(input.avoidProbeKinds);
@@ -57,13 +59,17 @@ export async function runInterviewerCall(
  * The question text is appended verbatim afterwards regardless of what the model
  * produced, so the selected question can never be silently rewritten (§23).
  */
-export async function runReplyCall(input: ReplyPromptInput): Promise<string> {
+export async function runReplyCall(
+  input: ReplyPromptInput,
+  deadline?: number
+): Promise<string> {
   const raw = await callModel({
     label: "reply",
     system: REPLY_SYSTEM_PROMPT,
     user: buildReplyUserPrompt(input),
     maxTokens: REPLY_MAX_TOKENS,
     temperature: REPLY_TEMPERATURE,
+    deadline,
   });
 
   const acknowledgement = stripQuestion(raw.trim(), input.nextQuestion);

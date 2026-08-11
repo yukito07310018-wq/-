@@ -72,17 +72,24 @@ export default function ChatInterface() {
   }, [messages, sending]);
 
   /**
-   * A rejected turn is not recorded server-side, so the interview is still
-   * waiting for this same answer. Take the optimistic bubble back out and put
-   * the text back in the box so resending is one keypress, not a retype —
-   * unless the user has already started typing something else.
+   * Offering a one-keypress resend is only safe when the turn certainly did not
+   * reach the database. These three codes are all raised before anything is
+   * written: the request never got past validation, the session lock, or Call A.
+   *
+   * Everything else — INTERNAL, or a dropped connection — can mean the turn was
+   * committed and the failure came afterwards. Re-sending then would replay the
+   * same answer as a *new* turn, inserting its evidence a second time and
+   * inflating the confidence built from it, so the answer stays on screen as a
+   * sent message and the user is told to reload instead.
    */
-  function restoreAfterFailure(text: string) {
+  const RESENDABLE_ERROR_CODES = ["AI_UNAVAILABLE", "RATE_LIMITED", "INVALID_INPUT"];
+
+  function restoreForResend(text: string) {
     setMessages((prev) => {
       const last = prev[prev.length - 1];
       return last?.role === "user" && last.content === text ? prev.slice(0, -1) : prev;
     });
-    setInput((current) => (current.trim().length > 0 ? current : text));
+    setInput(text);
   }
 
   async function send() {
@@ -104,7 +111,9 @@ export default function ChatInterface() {
 
       if (!res.ok) {
         setError(data?.error?.message ?? "送信に失敗しました。");
-        restoreAfterFailure(text);
+        if (data?.error?.code && RESENDABLE_ERROR_CODES.includes(data.error.code)) {
+          restoreForResend(text);
+        }
         return;
       }
 
@@ -120,8 +129,11 @@ export default function ChatInterface() {
         setTimeout(() => router.push(data.result_url!), 1800);
       }
     } catch {
-      setError("送信に失敗しました。通信環境を確認してください。");
-      restoreAfterFailure(text);
+      // The turn may have been recorded before the connection dropped, so the
+      // answer is left on screen rather than offered for resend.
+      setError(
+        "送信に失敗しました。通信環境を確認してください。回答が記録されている場合があるため、再読み込みして続きを確認してください。"
+      );
     } finally {
       setSending(false);
     }

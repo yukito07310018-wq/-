@@ -27,6 +27,8 @@ interface RecordedOp {
   model: string;
   action: string;
   rows: number;
+  /** The full call arguments, so assertions can inspect what was written. */
+  args: unknown;
 }
 
 let ops: RecordedOp[] = [];
@@ -40,6 +42,7 @@ function op(model: string, action: string) {
       model,
       action,
       rows: Array.isArray(data) ? data.length : 1,
+      args,
     };
     ops.push(recorded);
     return recorded;
@@ -51,6 +54,7 @@ function model(name: string) {
     create: op(name, "create"),
     createMany: op(name, "createMany"),
     update: op(name, "update"),
+    upsert: op(name, "upsert"),
     updateMany: op(name, "updateMany"),
     findMany: vi.fn(async () =>
       ELEMENT_IDS.map((elementId) => ({ id: `state-${elementId}`, elementId }))
@@ -279,10 +283,25 @@ describe("provisional evidence ids", () => {
       axes: axes(),
     });
 
-    // Whatever ids were assigned, none of the provisional "ev-<turn>-<i>" forms
-    // may survive into the stored rows — they are only unique within one turn.
-    const serialized = JSON.stringify(ops);
-    expect(serialized).not.toContain("ev-1-0");
-    expect(serialized).not.toContain("ev-1-1");
+    // Assert against the rows actually handed to Prisma. Provisional ids are
+    // only unique within a turn, so any that survive would collide across turns.
+    const evidenceRows = ops.find((o) => o.model === "evidence")!.args as {
+      data: { id: string }[];
+    };
+    const storedIds = evidenceRows.data.map((r) => r.id);
+    expect(storedIds).toHaveLength(2);
+    for (const id of storedIds) expect(id).not.toMatch(/^ev-\d+-\d+$/);
+
+    const historyRows = ops.find((o) => o.model === "scoreHistory")!.args as {
+      data: { causeEvidenceIds: string }[];
+    };
+    // The cause list must point at the ids that were really stored.
+    expect(JSON.parse(historyRows.data[0].causeEvidenceIds)).toEqual([storedIds[0]]);
+
+    const contradictionRows = ops.find((o) => o.model === "contradiction")!.args as {
+      data: { evidenceAId: string; evidenceBId: string }[];
+    };
+    expect(contradictionRows.data[0].evidenceAId).toBe(storedIds[0]);
+    expect(contradictionRows.data[0].evidenceBId).toBe(storedIds[1]);
   });
 });

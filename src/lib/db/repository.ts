@@ -343,37 +343,48 @@ export async function persistTurn(input: PersistTurnInput): Promise<void> {
 
   // ScoreHistory is keyed by ElementState.id, so the id of each row has to be
   // known before the batch is assembled. Read outside the transaction: it is a
-  // single query and it does not need to be part of the atomic write.
-  const stateRows = await prisma.elementState.findMany({
-    where: { sessionId },
-    select: { id: true, elementId: true },
-  });
+  // single query and it does not need to be part of the atomic write. Scoped to
+  // the elements this turn touched (at most MAX_ELEMENTS_PER_TURN) rather than
+  // re-reading all 100 rows that turnService has already loaded.
+  const changedIds = [...input.changedStates.keys()];
+  const stateRows =
+    changedIds.length > 0
+      ? await prisma.elementState.findMany({
+          where: { sessionId, elementId: { in: changedIds } },
+          select: { id: true, elementId: true },
+        })
+      : [];
   const stateIdByElement = new Map(stateRows.map((r) => [r.elementId, r.id]));
 
   const stateUpdates = [];
   const historyRows = [];
 
   for (const [elementId, state] of input.changedStates) {
-    const stateId = stateIdByElement.get(elementId);
-    if (!stateId) {
-      // The 100 rows are created with the session, so this only happens if the
-      // element model gained an element after this session started. Skipping
-      // costs one element's history; aborting would cost the whole turn.
-      console.warn(`[repository] no ElementState row for ${elementId} — skipping`);
-      continue;
+    const existingId = stateIdByElement.get(elementId);
+    // The 100 rows are created with the session, so a missing one means the
+    // element model gained an element after this session started. Creating it
+    // is the only consistent option: the turn's evidence for this element is
+    // written either way, and skipping the state row would leave that evidence
+    // permanently unable to influence any axis.
+    if (!existingId) {
+      console.warn(`[repository] no ElementState row for ${elementId} — creating it`);
     }
+    const stateId = existingId ?? newRowId();
+
+    const values = {
+      score: state.score,
+      confidence: state.confidence,
+      evidenceCount: state.evidence_count,
+      evidenceDiversity: state.evidence_diversity,
+      evidenceTypes: serializeStringArray(state.evidence_type_set),
+      lastUpdatedTurn: state.last_updated_turn,
+    };
 
     stateUpdates.push(
-      prisma.elementState.update({
-        where: { id: stateId },
-        data: {
-          score: state.score,
-          confidence: state.confidence,
-          evidenceCount: state.evidence_count,
-          evidenceDiversity: state.evidence_diversity,
-          evidenceTypes: serializeStringArray(state.evidence_type_set),
-          lastUpdatedTurn: state.last_updated_turn,
-        },
+      prisma.elementState.upsert({
+        where: { sessionId_elementId: { sessionId, elementId } },
+        update: values,
+        create: { id: stateId, sessionId, elementId, ...values },
       })
     );
 
