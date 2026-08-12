@@ -261,16 +261,18 @@ export function e3Calibration(): Finding {
   const bins: CalibrationBin[] = calibration(conf, est, truth);
   const populated = bins.filter((b) => b.count > 0);
   const slope = pearson(conf, est.map((e, i) => Math.abs(e - truth[i]!)));
-  const monotoneDown =
-    populated.length > 1 &&
-    populated.every((b, i) => i === 0 || b.meanAbsError <= populated[i - 1]!.meanAbsError + 1e-9);
 
   // Where does the error start climbing again? Below that point confidence is
   // informative; above it, the badge promises accuracy it does not deliver.
-  // Bins with a handful of observations are excluded — the top bin often holds
-  // a single element, and one lucky estimate is not a calibration curve.
+  // Bins with a handful of observations are excluded from the judgement — a bin
+  // holding a dozen elements is noise, not a calibration curve. They are still
+  // printed, so the exclusion is visible rather than convenient.
   const MIN_BIN = 20;
   const reliable = populated.filter((b) => b.count >= MIN_BIN);
+  const judged = reliable.length > 1 ? reliable : populated;
+  const monotoneDown =
+    judged.length > 1 &&
+    judged.every((b, i) => i === 0 || b.meanAbsError <= judged[i - 1]!.meanAbsError + 1e-9);
   const best = (reliable.length > 0 ? reliable : populated).reduce((a, b) =>
     b.meanAbsError < a.meanAbsError ? b : a
   );
@@ -285,11 +287,14 @@ export function e3Calibration(): Finding {
     headline:
       `Confidence帯ごとの平均絶対誤差は ` +
       populated.map((b) => `${b.label}→${round(b.meanAbsError, 1)}点(n=${b.count})`).join("、") +
-      `。おおむね右下がりだが厳密には単調ではない` +
-      (worsensAbove ? `（${best.label}帯より上で一度増える）` : "") +
-      `。加えて、Confidenceが0.4以上に達したサンプルは全体の${round(highConfidenceShare * 100, 1)}%しかない。` +
-      `未解決の矛盾が3件以上ある要素は上限が 0.75³≒0.42 に張り付くためで、` +
-      `「高Confidence＝信頼してよい」という画面上の約束は、実際にはほとんど到達しない領域にある。`,
+      `。n≥${MIN_BIN}の帯で見ると` +
+      (monotoneDown
+        ? `単調に減少しており、Confidenceは誤差の予測子として機能している。`
+        : `厳密には単調でない${worsensAbove ? `（${best.label}帯より上で一度増える）` : ""}。`) +
+      `Confidenceが0.4以上に達したサンプルは全体の${round(highConfidenceShare * 100, 1)}%` +
+      (highConfidenceShare < 0.2
+        ? `しかなく、「高Confidence＝信頼してよい」という画面上の約束は、実際にはほとんど到達しない領域にある。`
+        : `で、終了条件 conf ≥ 0.75 も到達可能な範囲に入った。`),
     metrics: {
       confidence_error_correlation: round(slope, 3),
       monotone_decreasing: monotoneDown ? 1 : 0,

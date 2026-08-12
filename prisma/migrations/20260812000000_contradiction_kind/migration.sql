@@ -1,0 +1,13 @@
+-- Distinguishes how a contradiction was detected.
+--
+-- "directional" — opposing evidence on the same element. The posterior already
+-- reflects it (mixed evidence sits near rate 0.5, where variance is highest),
+-- so it no longer discounts confidence a second time.
+-- "semantic"   — a conflict between two related elements, which the per-element
+-- arithmetic cannot see. These still discount confidence.
+--
+-- Existing rows default to "directional": every contradiction written before
+-- this migration came from the directional rule or is indistinguishable from
+-- one, and defaulting to the non-discounting kind cannot retroactively lower a
+-- stored confidence.
+ALTER TABLE "Contradiction" ADD COLUMN "kind" TEXT NOT NULL DEFAULT 'directional';

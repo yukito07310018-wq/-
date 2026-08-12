@@ -65,14 +65,27 @@ export function confidenceCapByTypeCount(typeCount: number): number {
 
 /**
  * §11.3 — discount from the most severe unresolved contradictions.
+ *
+ * Only `semantic` conflicts count. A `directional` clash is positive and
+ * negative evidence on the same element, and the posterior has already priced
+ * that in: mixed evidence puts the rate near 0.5, which is exactly where its
+ * variance — and therefore the error bar confidence is read from — is largest.
+ * Discounting for it again charges the same conflict twice, and because
+ * directional pairs grow with the product of the two counts, that second charge
+ * was what pinned confidence near zero on any element with a mixed history.
+ *
+ * Directional contradictions are still detected, stored and shown; they steer
+ * question selection (§17's C term) and they are the honest answer to "why is
+ * this element uncertain?". They just no longer bill for it twice.
+ *
  * Resolved ones are ignored, which is what makes a resolution restore confidence.
  */
 export function applyContradictionPenalty(
   confidence: number,
-  contradictions: readonly Pick<Contradiction, "severity" | "status">[]
+  contradictions: readonly Pick<Contradiction, "severity" | "status" | "kind">[]
 ): number {
   const worst = contradictions
-    .filter((c) => c.status === "unresolved")
+    .filter((c) => c.status === "unresolved" && c.kind === "semantic")
     .sort((a, b) => b.severity - a.severity)
     .slice(0, CONTRADICTION_CAP);
 
@@ -107,7 +120,7 @@ export interface ConfidenceResult {
  */
 export function computeConfidence(
   evidence: readonly Pick<Evidence, "type" | "strength" | "reliability" | "direction" | "turn_id">[],
-  contradictions: readonly Pick<Contradiction, "severity" | "status">[]
+  contradictions: readonly Pick<Contradiction, "severity" | "status" | "kind">[]
 ): ConfidenceResult {
   const typeSetAfter: string[] = [];
   const seen = new Set<string>();

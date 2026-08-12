@@ -102,6 +102,9 @@ model Contradiction {
   id             String  @id @default(cuid())
   sessionId      String
   session        Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  // "directional" (same element, opposing evidence) or "semantic" (two related
+  // elements in conflict). Only semantic ones discount confidence — see §11.3.
+  kind           String  @default("directional")
   elementIds     String // JSON array
   evidenceAId    String
   evidenceBId    String

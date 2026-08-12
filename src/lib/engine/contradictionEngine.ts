@@ -1,6 +1,6 @@
 import { neighbourhoodOf } from "../model/elements";
 import { evidenceMagnitude } from "./scoreEngine";
-import type { Contradiction, Evidence } from "../types/diagnosis";
+import type { Contradiction, ContradictionKind, Evidence } from "../types/diagnosis";
 
 /**
  * §13 — contradiction detection.
@@ -19,6 +19,7 @@ export const RESOLUTION_RELIABILITY = 0.7;
 export const RESOLUTION_MIN_COUNT = 2;
 
 export interface ContradictionDraft {
+  kind: ContradictionKind;
   elements: string[];
   evidence_a: string;
   evidence_b: string;
@@ -78,6 +79,7 @@ export function detectDirectionalContradictions(
         if (seen.has(key)) continue;
         seen.add(key);
         drafts.push({
+          kind: "directional",
           elements: [elementId],
           evidence_a: p.evidence_id,
           evidence_b: n.evidence_id,
@@ -123,6 +125,7 @@ export function validateSemanticCandidates(
     seen.add(key);
 
     drafts.push({
+      kind: "semantic",
       elements: [a.element_id, b.element_id],
       evidence_a: a.evidence_id,
       evidence_b: b.evidence_id,

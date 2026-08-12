@@ -76,6 +76,7 @@ function blankState(elementId: string): ElementState {
 function toContradiction(draft: ContradictionDraft, id: string): Contradiction {
   return {
     contradiction_id: id,
+    kind: draft.kind,
     elements: draft.elements,
     evidence_a: draft.evidence_a,
     evidence_b: draft.evidence_b,

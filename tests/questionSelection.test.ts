@@ -58,6 +58,7 @@ describe("individual terms", () => {
     const contradictions: Contradiction[] = [
       {
         contradiction_id: "c1",
+        kind: "directional",
         elements: ["E001"],
         evidence_a: "a",
         evidence_b: "b",
@@ -67,6 +68,7 @@ describe("individual terms", () => {
       },
       {
         contradiction_id: "c2",
+        kind: "directional",
         elements: ["E002"],
         evidence_a: "c",
         evidence_b: "d",
@@ -134,6 +136,7 @@ describe("selectQuestion", () => {
     const contradictions: Contradiction[] = [
       {
         contradiction_id: "c1",
+        kind: "directional",
         elements: ["E003"],
         evidence_a: "a",
         evidence_b: "b",

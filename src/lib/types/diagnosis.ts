@@ -96,8 +96,24 @@ export interface Evidence {
 /** Evidence as emitted by Call A, before the app assigns an id. */
 export type EvidenceDraft = Omit<Evidence, "evidence_id" | "turn_id">;
 
+/**
+ * How a contradiction was found, which decides whether it discounts confidence.
+ *
+ * `directional` — positive and negative evidence on the same element. The
+ * posterior already sees this: mixed evidence lands the rate near 0.5, where its
+ * variance is highest, so confidence falls without any extra rule. Discounting
+ * again would count the same conflict twice.
+ *
+ * `semantic` — a conflict between two *different* elements, flagged by the LLM
+ * and validated in code. Nothing in the arithmetic can see it, because each
+ * element's posterior is computed independently, so this is the case the
+ * discount exists for.
+ */
+export type ContradictionKind = "directional" | "semantic";
+
 export interface Contradiction {
   contradiction_id: string;
+  kind: ContradictionKind;
   elements: string[];
   evidence_a: string;
   evidence_b: string;

@@ -56,6 +56,7 @@ describe("directional detection (§13.2a)", () => {
     const existing: Contradiction[] = [
       {
         contradiction_id: "c1",
+        kind: "directional",
         elements: ["E001"],
         evidence_a: a.evidence_id,
         evidence_b: b.evidence_id,
@@ -189,6 +190,7 @@ describe("resolution (§13.3)", () => {
   const b = makeEvidence({ element_id: "E001", direction: "negative", turn_id: 2 });
   const contradiction: Contradiction = {
     contradiction_id: "c1",
+    kind: "directional",
     elements: ["E001"],
     evidence_a: a.evidence_id,
     evidence_b: b.evidence_id,

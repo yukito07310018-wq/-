@@ -96,18 +96,18 @@ describe("diversity cap (§11.2)", () => {
 describe("contradiction penalty (§11.3)", () => {
   it("reduces confidence for unresolved contradictions only", () => {
     const base = 0.8;
-    const unresolved = applyContradictionPenalty(base, [{ severity: 0.8, status: "unresolved" }]);
-    const resolved = applyContradictionPenalty(base, [{ severity: 0.8, status: "resolved" }]);
+    const unresolved = applyContradictionPenalty(base, [{ kind: "semantic" as const, severity: 0.8, status: "unresolved" }]);
+    const resolved = applyContradictionPenalty(base, [{ kind: "semantic" as const, severity: 0.8, status: "resolved" }]);
 
     expect(unresolved).toBeCloseTo(0.8 * (1 - 0.25 * 0.8), 5);
     expect(resolved).toBe(base);
   });
 
   it("compounds across multiple contradictions", () => {
-    const one = applyContradictionPenalty(1, [{ severity: 1, status: "unresolved" }]);
+    const one = applyContradictionPenalty(1, [{ kind: "semantic" as const, severity: 1, status: "unresolved" }]);
     const two = applyContradictionPenalty(1, [
-      { severity: 1, status: "unresolved" },
-      { severity: 1, status: "unresolved" },
+      { kind: "semantic" as const, severity: 1, status: "unresolved" },
+      { kind: "semantic" as const, severity: 1, status: "unresolved" },
     ]);
     expect(two).toBeLessThan(one);
   });
@@ -117,11 +117,11 @@ describe("contradiction penalty (§11.3)", () => {
     // negative one, so their count grows with the product. Without a cap, an
     // element with plenty of mixed evidence had its confidence driven to zero
     // and could never satisfy the conf ≥ 0.75 exit condition.
-    const many = Array.from({ length: 120 }, () => ({ severity: 1, status: "unresolved" as const }));
+    const many = Array.from({ length: 120 }, () => ({ kind: "semantic" as const, severity: 1, status: "unresolved" as const }));
     const capped = applyContradictionPenalty(1, many);
     const exactlyCap = applyContradictionPenalty(
       1,
-      Array.from({ length: CONTRADICTION_CAP }, () => ({ severity: 1, status: "unresolved" as const }))
+      Array.from({ length: CONTRADICTION_CAP }, () => ({ kind: "semantic" as const, severity: 1, status: "unresolved" as const }))
     );
 
     expect(capped).toBeCloseTo(exactlyCap, 12);
@@ -129,8 +129,8 @@ describe("contradiction penalty (§11.3)", () => {
   });
 
   it("applies the most severe contradictions first", () => {
-    const mild = { severity: 0.1, status: "unresolved" as const };
-    const severe = { severity: 1, status: "unresolved" as const };
+    const mild = { kind: "semantic" as const, severity: 0.1, status: "unresolved" as const };
+    const severe = { kind: "semantic" as const, severity: 1, status: "unresolved" as const };
     const withSevere = applyContradictionPenalty(1, [mild, mild, mild, severe]);
     const mildOnly = applyContradictionPenalty(1, [mild, mild, mild]);
     expect(withSevere).toBeLessThan(mildOnly);
@@ -138,12 +138,40 @@ describe("contradiction penalty (§11.3)", () => {
 
   it("restores confidence when the contradiction is resolved", () => {
     const evidence = items(["personal_experience", "decision_example"]);
-    const penalised = computeConfidence(evidence, [{ severity: 0.9, status: "unresolved" }]);
-    const restored = computeConfidence(evidence, [{ severity: 0.9, status: "resolved" }]);
+    const penalised = computeConfidence(evidence, [{ kind: "semantic" as const, severity: 0.9, status: "unresolved" }]);
+    const restored = computeConfidence(evidence, [{ kind: "semantic" as const, severity: 0.9, status: "resolved" }]);
 
     expect(restored.confidence).toBeGreaterThan(penalised.confidence);
     // Recomputation is the only path, so a lifted discount leaves no residue.
     expect(restored.confidence).toBeCloseTo(computeConfidence(evidence, []).confidence, 12);
+  });
+
+  it("does not discount twice for a directional clash", () => {
+    // A directional contradiction is opposing evidence on one element, which the
+    // posterior has already priced in. Charging for it again was what drove
+    // confidence to zero on any element with a mixed history.
+    const evidence = items(["personal_experience", "decision_example", "value_statement"]);
+    const clean = computeConfidence(evidence, []);
+    const withDirectional = computeConfidence(
+      evidence,
+      Array.from({ length: 50 }, () => ({
+        kind: "directional" as const,
+        severity: 1,
+        status: "unresolved" as const,
+      }))
+    );
+    expect(withDirectional.confidence).toBeCloseTo(clean.confidence, 12);
+  });
+
+  it("still discounts for a semantic conflict", () => {
+    // A conflict between two *different* elements is invisible to the per-element
+    // posterior, so this is the case the discount exists for.
+    const evidence = items(["personal_experience", "decision_example", "value_statement"]);
+    const clean = computeConfidence(evidence, []);
+    const withSemantic = computeConfidence(evidence, [
+      { kind: "semantic", severity: 0.8, status: "unresolved" },
+    ]);
+    expect(withSemantic.confidence).toBeLessThan(clean.confidence);
   });
 
   it("keeps mixed evidence uncertain even without recorded contradictions", () => {

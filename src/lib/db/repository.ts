@@ -179,6 +179,7 @@ export async function loadContradictions(sessionId: string): Promise<Contradicti
   });
   return rows.map((r) => ({
     contradiction_id: r.id,
+    kind: r.kind === "semantic" ? "semantic" : "directional",
     elements: parseStringArray(r.elementIds),
     evidence_a: r.evidenceAId,
     evidence_b: r.evidenceBId,
@@ -353,6 +354,7 @@ export async function persistTurn(input: PersistTurnInput): Promise<void> {
       await tx.contradiction.create({
         data: {
           sessionId,
+          kind: c.kind,
           elementIds: serializeStringArray(c.elements),
           evidenceAId: mapId(c.evidence_a),
           evidenceBId: mapId(c.evidence_b),
