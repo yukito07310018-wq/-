@@ -5,6 +5,7 @@ import ContradictionPanel from "@/components/ContradictionPanel";
 import DiagnosisSummary from "@/components/DiagnosisSummary";
 import ElementInsight from "@/components/ElementInsight";
 import EvidencePanel from "@/components/EvidencePanel";
+import { rankAxes, type AxisRanking } from "@/lib/engine/ordinal";
 import { buildProfile } from "@/lib/interview/profileService";
 import { ELEMENTS } from "@/lib/model/elements";
 
@@ -19,6 +20,10 @@ export default async function ResultPage({
   const { sessionId } = await params;
   const profile = await buildProfile(sessionId);
   if (!profile) notFound();
+
+  const rankings = new Map<string, AxisRanking>(
+    rankAxes(profile.axis_insights).map((r) => [r.axis_id, r])
+  );
 
   const elementNames: Record<string, string> = {};
   for (const e of ELEMENTS) elementNames[e.element_id] = e.name;
@@ -35,13 +40,21 @@ export default async function ResultPage({
       />
 
       <section className="rounded-xl border border-[color:var(--border)] bg-[color:var(--surface)] p-5">
-        <h2 className="text-lg font-semibold">10軸の傾向</h2>
+        <h2 className="text-lg font-semibold">10軸の相対的な傾向</h2>
+        <p className="mt-1 text-xs text-[color:var(--muted)]">
+          あなたの10軸を互いに比べた順位です。他の人と比べた位置ではありません
+          （比較のための基準集団を持っていないため）。
+        </p>
         <AxisRadarChart axes={profile.axis_insights} />
       </section>
 
       <div className="grid gap-4 md:grid-cols-2">
         {profile.axis_insights.map((axis) => (
-          <ElementInsight key={axis.axis_id} axis={axis} />
+          <ElementInsight
+            key={axis.axis_id}
+            axis={axis}
+            ranking={rankings.get(axis.axis_id)!}
+          />
         ))}
       </div>
 
