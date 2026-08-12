@@ -5,17 +5,17 @@
       "id": "E1",
       "question": "30ターンの対話で、設定した真の特性値を復元できるか",
       "verdict": "warn",
-      "headline": "真値との相関 r=0.461、RMSE=16.4点。「常に50と答えるモデル」のRMSE=17.7点。",
+      "headline": "真値との相関 r=0.48、RMSE=16.4点。「常に50と答えるモデル」のRMSE=17.5点。",
       "metrics": {
-        "pearson_r": 0.461,
-        "r_squared": 0.212,
+        "pearson_r": 0.48,
+        "r_squared": 0.231,
         "rmse": 16.36,
-        "rmse_constant_baseline": 17.72,
-        "bias": -0.64,
+        "rmse_constant_baseline": 17.46,
+        "bias": -0.34,
         "saturation_rate": 0,
-        "measured_elements_per_run": 90,
-        "evidence_per_element": 2,
-        "n": 2160
+        "measured_elements_per_run": 60,
+        "evidence_per_element": 3,
+        "n": 1440
       }
     },
     {
@@ -167,11 +167,11 @@
       "id": "E5",
       "question": "同じ人が2回受けたとき、同じ診断結果になるか（再検査信頼性）",
       "verdict": "fail",
-      "headline": "同一人物の2回の診断の相関 r=0.228、同一要素で平均12.2点の差。心理測定の慣行では個人について語るのに r≥0.7 が要る。",
+      "headline": "同一人物の2回の診断の相関 r=0.287、同一要素で平均13.4点の差。心理測定の慣行では個人について語るのに r≥0.7 が要る。",
       "metrics": {
-        "test_retest_r": 0.228,
-        "mean_abs_difference": 12.18,
-        "sd_of_r": 0.131,
+        "test_retest_r": 0.287,
+        "mean_abs_difference": 13.39,
+        "sd_of_r": 0.116,
         "personas": 24
       }
     },
@@ -179,15 +179,15 @@
       "id": "E6",
       "question": "異なる人物を、軸レベルで区別できるか（弁別的妥当性）",
       "verdict": "pass",
-      "headline": "軸レベルでは区別できている。ICC(1)=0.791、軸の真値との相関 r=0.974。ただし出力の幅が狭い：真値の標準偏差22.4点に対し出力は6.3点で、約3.6倍に圧縮されている（10軸すべてが41〜59点の範囲に収まる）。",
+      "headline": "軸レベルでは区別できている。ICC(1)=0.775、軸の真値との相関 r=0.98。ただし出力の幅が狭い：真値の標準偏差22.4点に対し出力は7.36点で、約3.1倍に圧縮されている（10軸すべてが39.1〜60.8点の範囲に収まる）。",
       "metrics": {
-        "icc1": 0.791,
-        "axis_truth_correlation": 0.974,
-        "axis_score_sd": 6.3,
+        "icc1": 0.775,
+        "axis_truth_correlation": 0.98,
+        "axis_score_sd": 7.36,
         "truth_axis_sd": 22.44,
-        "compression_factor": 3.56,
-        "axis_score_min": 41,
-        "axis_score_max": 59,
+        "compression_factor": 3.05,
+        "axis_score_min": 39.1,
+        "axis_score_max": 60.8,
         "groups": 50
       }
     },
@@ -200,7 +200,7 @@
         "worst_mean_abs_shift": 3.6,
         "worst_rank_correlation": 1,
         "legacy_worst_mean_abs_shift": 4.8,
-        "axis_kappa_max_shift": 1.28
+        "axis_kappa_max_shift": 1.83
       },
       "detail": {
         "rows": [
@@ -246,7 +246,7 @@
         "axis_kappa": [
           {
             "kappa": 0.25,
-            "mean_abs_axis_shift": 0.44
+            "mean_abs_axis_shift": 0.66
           },
           {
             "kappa": 0.5,
@@ -254,11 +254,11 @@
           },
           {
             "kappa": 1,
-            "mean_abs_axis_shift": 0.61
+            "mean_abs_axis_shift": 0.88
           },
           {
             "kappa": 2,
-            "mean_abs_axis_shift": 1.28
+            "mean_abs_axis_shift": 1.83
           }
         ]
       }
@@ -267,59 +267,59 @@
       "id": "E8",
       "question": "更新式を替えれば直るのか、それとも証拠量が足りないのか",
       "verdict": "warn",
-      "headline": "現行アプリの設定（30ターン・1要素あたり証拠2件）では、現行式 RMSE=16.5点、修正前の加算式 15.8点で、差はわずか。この条件で効いているのは更新式ではなく証拠量の不足で、式を直しても30ターン・100要素のままでは要素スコアは意味を持たない。更新式の修正が効くのは証拠が増えたとき（E2）。",
+      "headline": "現行アプリの設定（30ターン・1要素あたり証拠2件）では、現行式 RMSE=16.2点、修正前の加算式 15.5点で、差はわずか。この条件で効いているのは更新式ではなく証拠量の不足で、式を直しても30ターン・100要素のままでは要素スコアは意味を持たない。更新式の修正が効くのは証拠が増えたとき（E2）。",
       "metrics": {
-        "current_r": 0.432,
-        "current_rmse": 16.54,
-        "legacy_r": 0.428,
-        "legacy_rmse": 15.82,
-        "rmse_reduction_points": -0.72
+        "current_r": 0.484,
+        "current_rmse": 16.24,
+        "legacy_r": 0.479,
+        "legacy_rmse": 15.48,
+        "rmse_reduction_points": -0.76
       }
     },
     {
       "id": "E9",
       "question": "抽出側がわずかに肯定寄りだと、結果はどれだけ動くか",
       "verdict": "pass",
-      "headline": "抽出が20ポイント肯定に傾くと、平均スコアは49.8点→55.4点、真値からの偏りは0.1点→5.6点になる。増幅率は0.28で、1を下回るので engine 側が偏りを作っているわけではない（1.0 なら抽出の傾きをそのまま通す忠実な推定器）。修正前の加算式では0.2だった。推定が証拠に忠実になったぶん、抽出の偏りも素直に通るようになっている。",
+      "headline": "抽出が20ポイント肯定に傾くと、平均スコアは48.9点→57.2点、真値からの偏りは-0.5点→7.8点になる。増幅率は0.42で、1を下回るので engine 側が偏りを作っているわけではない（1.0 なら抽出の傾きをそのまま通す忠実な推定器）。修正前の加算式では0.33だった。推定が証拠に忠実になったぶん、抽出の偏りも素直に通るようになっている。",
       "metrics": {
-        "bias_at_zero": 0.1,
-        "bias_at_tilt": 5.6,
-        "amplification": 0.28,
-        "legacy_amplification": 0.2
+        "bias_at_zero": -0.5,
+        "bias_at_tilt": 7.8,
+        "amplification": 0.42,
+        "legacy_amplification": 0.33
       },
       "detail": {
         "rows": [
           {
             "extractor_positive_bias": 0,
-            "mean_score": 49.8,
-            "bias_points": 0.1,
-            "legacy_bias_points": 0.1,
-            "rmse": 16.4,
-            "r": 0.438
+            "mean_score": 48.9,
+            "bias_points": -0.5,
+            "legacy_bias_points": -0.3,
+            "rmse": 16.1,
+            "r": 0.496
           },
           {
             "extractor_positive_bias": 0.05,
-            "mean_score": 51.3,
+            "mean_score": 51,
             "bias_points": 1.6,
-            "legacy_bias_points": 1.2,
-            "rmse": 16.3,
-            "r": 0.448
+            "legacy_bias_points": 1.4,
+            "rmse": 15.8,
+            "r": 0.513
           },
           {
             "extractor_positive_bias": 0.1,
-            "mean_score": 52.6,
-            "bias_points": 2.8,
-            "legacy_bias_points": 2.1,
-            "rmse": 16.4,
-            "r": 0.452
+            "mean_score": 53,
+            "bias_points": 3.7,
+            "legacy_bias_points": 2.9,
+            "rmse": 16.1,
+            "r": 0.509
           },
           {
             "extractor_positive_bias": 0.2,
-            "mean_score": 55.4,
-            "bias_points": 5.6,
-            "legacy_bias_points": 4.1,
-            "rmse": 16.6,
-            "r": 0.482
+            "mean_score": 57.2,
+            "bias_points": 7.8,
+            "legacy_bias_points": 6.2,
+            "rmse": 17.6,
+            "r": 0.492
           }
         ]
       }
@@ -372,6 +372,74 @@
             "unresolved_contradictions_per_element": 100.7,
             "mean_confidence": 0.716,
             "max_confidence": 0.8098
+          }
+        ]
+      }
+    },
+    {
+      "id": "E11",
+      "question": "30ターンを広く浅く使うべきか、狭く深く使うべきか",
+      "verdict": "warn",
+      "headline": "100要素を広く浅く回ると、1要素あたり証拠2件で要素相関 r=0.452、軸相関 r=0.303。対象を60要素に絞ると要素相関 r=0.504、軸相関 r=0.442 で、**両方とも改善する**。つまり広く浅い探索は深さとのトレードオフではなく、単に劣っている。さらに絞ると要素相関は上がり続ける（10要素で r=0.784）が、1軸あたりの要素が減るため軸相関は落ちる。この結果を受けて `FOCUS_ELEMENT_BUDGET = 60` を実装済み（`src/lib/ai/prompts.ts`）。",
+      "metrics": {
+        "broad_element_r": 0.452,
+        "broad_axis_r": 0.303,
+        "best_element_r": 0.784,
+        "best_element_pool_size": 10,
+        "best_axis_r": 0.442,
+        "best_axis_pool_size": 60
+      },
+      "detail": {
+        "rows": [
+          {
+            "pool_size": 100,
+            "evidence_per_element": 2,
+            "element_r": 0.452,
+            "element_rmse": 16.4,
+            "axis_r": 0.303,
+            "axis_rmse": 5.7,
+            "mean_confidence": 0.16,
+            "elements_covered": 90
+          },
+          {
+            "pool_size": 60,
+            "evidence_per_element": 3,
+            "element_r": 0.504,
+            "element_rmse": 15.8,
+            "axis_r": 0.442,
+            "axis_rmse": 5.6,
+            "mean_confidence": 0.215,
+            "elements_covered": 60
+          },
+          {
+            "pool_size": 40,
+            "evidence_per_element": 4.5,
+            "element_r": 0.561,
+            "element_rmse": 15.4,
+            "axis_r": 0.405,
+            "axis_rmse": 6.3,
+            "mean_confidence": 0.281,
+            "elements_covered": 40
+          },
+          {
+            "pool_size": 20,
+            "evidence_per_element": 9,
+            "element_r": 0.685,
+            "element_rmse": 13.2,
+            "axis_r": 0.351,
+            "axis_rmse": 7.5,
+            "mean_confidence": 0.4,
+            "elements_covered": 20
+          },
+          {
+            "pool_size": 10,
+            "evidence_per_element": 18,
+            "element_r": 0.784,
+            "element_rmse": 11.1,
+            "axis_r": 0.326,
+            "axis_rmse": 8.7,
+            "mean_confidence": 0.529,
+            "elements_covered": 10
           }
         ]
       }

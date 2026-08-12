@@ -6,7 +6,8 @@ import type {
   Evidence,
   EvidenceDraft,
 } from "@/lib/types/diagnosis";
-import { ELEMENT_IDS } from "@/lib/model/elements";
+import { ELEMENT_IDS, requireElement } from "@/lib/model/elements";
+import { FOCUS_ELEMENT_BUDGET } from "@/lib/ai/prompts";
 import type { Persona } from "./persona";
 import { generateTurnEvidence, IDEAL_RESPONDENT, type RespondentConfig } from "./respondent";
 import { makeRng, type Rng } from "./rng";
@@ -61,6 +62,11 @@ export interface RunOptions {
  * with some jitter" reproduces where the real selector spends its questions
  * without needing an LLM to write them.
  *
+ * It also mirrors `selectContextElements`'s focus budget: the app offers new
+ * elements only until FOCUS_ELEMENT_BUDGET of them are open, then deepens. If
+ * this stand-in kept sweeping after the app stopped, every number in the study
+ * would describe an interview the app no longer runs.
+ *
  * The jitter matters: a purely deterministic sweep would visit every element the
  * same number of times, which is a friendlier interview than the real one.
  */
@@ -69,11 +75,24 @@ function lowestConfidenceFirst(
   count: number,
   rng: Rng
 ): string[] {
-  const scored = ELEMENT_IDS.map((id) => {
+  const isOpen = (id: string) => (states.get(id)?.evidence_count ?? 0) > 0;
+  const openCount = ELEMENT_IDS.filter(isOpen).length;
+  const candidates =
+    openCount < FOCUS_ELEMENT_BUDGET ? ELEMENT_IDS : ELEMENT_IDS.filter(isOpen);
+
+  const openedPerAxis = new Map<string, number>();
+  for (const id of ELEMENT_IDS) {
+    if (!isOpen(id)) continue;
+    const axisId = requireElement(id).axis_id;
+    openedPerAxis.set(axisId, (openedPerAxis.get(axisId) ?? 0) + 1);
+  }
+
+  const scored = candidates.map((id) => {
     const s = states.get(id);
     const confidence = s?.confidence ?? 0;
-    const unexplored = (s?.evidence_count ?? 0) === 0 ? 0.1 : 0;
-    return { id, key: confidence - unexplored + rng.range(0, 0.08) };
+    // Untouched elements from the least-covered axes come first, as in the app.
+    const axisLoad = isOpen(id) ? 0 : (openedPerAxis.get(requireElement(id).axis_id) ?? 0) * 0.001;
+    return { id, key: confidence + axisLoad + rng.range(0, 0.0005) };
   });
   scored.sort((a, b) => a.key - b.key);
   return scored.slice(0, count).map((s) => s.id);

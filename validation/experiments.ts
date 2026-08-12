@@ -837,6 +837,114 @@ export function e10ConfidenceCollapse(): Finding {
   };
 }
 
+// ---------------------------------------------------------------------------
+// E11 — how should 30 turns be spent: breadth or depth?
+// ---------------------------------------------------------------------------
+
+/** k elements spread evenly over the 10 axes, so axis coverage stays balanced. */
+function balancedPool(size: number): string[] {
+  const perAxis = Math.max(1, Math.round(size / AXES.length));
+  return AXES.flatMap((axis) => axis.element_ids.slice(0, perAxis));
+}
+
+/** Lowest-confidence-first, but only ever inside the given pool. */
+function pooledSelector(pool: readonly string[], perTurn: number) {
+  return (states: ReadonlyMap<string, ElementState>, _turn: number, rng: ReturnType<typeof makeRng>) => {
+    const scored = pool.map((id) => {
+      const s = states.get(id);
+      return { id, key: (s?.confidence ?? 0) - ((s?.evidence_count ?? 0) === 0 ? 0.1 : 0) + rng.range(0, 0.08) };
+    });
+    scored.sort((a, b) => a.key - b.key);
+    return scored.slice(0, perTurn).map((s) => s.id);
+  };
+}
+
+/**
+ * The remaining design question, asked as a measurement.
+ *
+ * A 30-turn interview buys about 90 element-visits. They can be spread over 90
+ * elements at one visit each, or concentrated on 20 at four or five visits each.
+ * The first gives coverage and useless per-element estimates; the second gives
+ * usable estimates of a sample of elements. Which produces a better *axis*
+ * reading — the thing the result screen actually shows — is not obvious, because
+ * an axis aggregates ten elements and narrowing means each axis is represented
+ * by fewer of them.
+ *
+ * Axis truth is always the mean over all ten of the axis's elements, including
+ * the ones a narrowed interview never asked about. That is the honest target: it
+ * asks whether a sample of two elements can stand in for the axis it belongs to.
+ */
+export function e11BreadthDepth(): Finding {
+  const cohort = makePersonaCohort(16, 1919);
+  const poolSizes = [100, 60, 40, 20, 10];
+
+  const rows = poolSizes.map((size) => {
+    const pool = balancedPool(size);
+    const elementEst: number[] = [];
+    const elementTruth: number[] = [];
+    const axisEst: number[] = [];
+    const axisTruth: number[] = [];
+    const confidences: number[] = [];
+    let evidencePerElement = 0;
+
+    cohort.forEach((persona, i) => {
+      const run = runInterview(persona, {
+        turns: APP_TURNS,
+        seed: 90000 + i,
+        selectTargets: pooledSelector(pool, IDEAL_RESPONDENT.elementsPerTurn),
+      });
+
+      const covered = measuredElements(run);
+      elementEst.push(...scoresOf(run, covered));
+      elementTruth.push(...truthVector(persona, covered));
+      confidences.push(...covered.map((id) => run.states.get(id)!.confidence));
+      evidencePerElement += run.evidence.length / Math.max(1, covered.length);
+
+      for (const axis of AXES) {
+        axisEst.push(run.axes.find((a) => a.axis_id === axis.axis_id)?.score ?? 50);
+        axisTruth.push(mean(axis.element_ids.map((id) => persona.theta.get(id) ?? 50)));
+      }
+    });
+
+    return {
+      pool_size: pool.length,
+      evidence_per_element: round(evidencePerElement / cohort.length, 1),
+      element_r: round(pearson(elementEst, elementTruth), 3),
+      element_rmse: round(rmse(elementEst, elementTruth), 1),
+      axis_r: round(pearson(axisEst, axisTruth), 3),
+      axis_rmse: round(rmse(axisEst, axisTruth), 1),
+      mean_confidence: round(mean(confidences), 3),
+      elements_covered: round(elementEst.length / cohort.length, 0),
+    };
+  });
+
+  const broadest = rows[0]!;
+  const bestElement = rows.reduce((a, b) => (b.element_r > a.element_r ? b : a));
+  const bestAxis = rows.reduce((a, b) => (b.axis_r > a.axis_r ? b : a));
+
+  return {
+    id: "E11",
+    question: "30ターンを広く浅く使うべきか、狭く深く使うべきか",
+    verdict: "warn",
+    headline:
+      `100要素を広く浅く回ると、1要素あたり証拠${broadest.evidence_per_element}件で要素相関 r=${broadest.element_r}、軸相関 r=${broadest.axis_r}。` +
+      `対象を${bestAxis.pool_size}要素に絞ると要素相関 r=${rows.find((r) => r.pool_size === bestAxis.pool_size)?.element_r}、軸相関 r=${bestAxis.axis_r} で、` +
+      `**両方とも改善する**。つまり広く浅い探索は深さとのトレードオフではなく、単に劣っている。` +
+      `さらに絞ると要素相関は上がり続ける（${bestElement.pool_size}要素で r=${bestElement.element_r}）が、` +
+      `1軸あたりの要素が減るため軸相関は落ちる。` +
+      `この結果を受けて `+"`FOCUS_ELEMENT_BUDGET = 60`"+` を実装済み（`+"`src/lib/ai/prompts.ts`"+`）。`,
+    metrics: {
+      broad_element_r: broadest.element_r,
+      broad_axis_r: broadest.axis_r,
+      best_element_r: bestElement.element_r,
+      best_element_pool_size: bestElement.pool_size,
+      best_axis_r: bestAxis.axis_r,
+      best_axis_pool_size: bestAxis.pool_size,
+    },
+    detail: { rows },
+  };
+}
+
 export function runAll(): Finding[] {
   return [
     e1ParameterRecovery(),
@@ -849,5 +957,6 @@ export function runAll(): Finding[] {
     e8RuleComparison(),
     e9ExtractorBias(),
     e10ConfidenceCollapse(),
+    e11BreadthDepth(),
   ];
 }

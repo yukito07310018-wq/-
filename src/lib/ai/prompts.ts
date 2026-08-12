@@ -142,6 +142,22 @@ export interface ProfileContext {
 }
 
 /**
+ * The interview opens at most this many distinct elements.
+ *
+ * 30 turns buys roughly 90 element-visits. Spent one per element they leave
+ * every estimate resting on ~2 items of evidence, which is not enough to
+ * estimate anything: `validation/` E11 measured element correlation 0.45 and
+ * *axis* correlation 0.30 in that regime. Concentrating the same 90 visits on
+ * 60 elements improves both at once (0.50 and 0.44) — the breadth-first sweep
+ * is not a trade-off against depth, it is simply dominated.
+ *
+ * 60 is where axis accuracy peaks. Narrowing further keeps improving element
+ * estimates (0.69 at 20 elements, 0.78 at 10) but starves each axis of the
+ * elements it aggregates, so axis accuracy falls away again.
+ */
+export const FOCUS_ELEMENT_BUDGET = 60;
+
+/**
  * §37 — picks at most 35 elements worth sending: the least certain, whatever
  * was just touched (plus its neighbourhood), and anything caught in an
  * unresolved contradiction.
@@ -154,10 +170,29 @@ export function selectContextElements(ctx: ProfileContext): string[] {
     }
   };
 
-  const byConfidence = [...ELEMENTS]
-    .map((e) => ({ id: e.element_id, confidence: ctx.states.get(e.element_id)?.confidence ?? 0 }))
-    .sort((a, b) => a.confidence - b.confidence || a.id.localeCompare(b.id));
-  for (const { id } of byConfidence.slice(0, 20)) add(id);
+  const isOpen = (id: string) => (ctx.states.get(id)?.evidence_count ?? 0) > 0;
+  const opened = ELEMENTS.filter((e) => isOpen(e.element_id));
+  // Once the budget is spent, untouched elements stop being offered and the
+  // interview deepens what it already has.
+  const candidates = opened.length < FOCUS_ELEMENT_BUDGET ? ELEMENTS : opened;
+
+  // Untouched elements all sit at confidence 0, so without a second key the
+  // tie-break is alphabetical and the interview marches E001→E090, leaving the
+  // last axes untouched for every session. Opening from the least-covered axis
+  // first spreads the budget over all ten.
+  const openedPerAxis = new Map<string, number>();
+  for (const e of opened) openedPerAxis.set(e.axis_id, (openedPerAxis.get(e.axis_id) ?? 0) + 1);
+
+  const byPriority = candidates
+    .map((e) => ({
+      id: e.element_id,
+      confidence: ctx.states.get(e.element_id)?.confidence ?? 0,
+      axisLoad: isOpen(e.element_id) ? 0 : (openedPerAxis.get(e.axis_id) ?? 0),
+    }))
+    .sort(
+      (a, b) => a.confidence - b.confidence || a.axisLoad - b.axisLoad || a.id.localeCompare(b.id)
+    );
+  for (const { id } of byPriority.slice(0, 20)) add(id);
 
   const neighbours: string[] = [];
   for (const id of ctx.recentlyUpdated) {
