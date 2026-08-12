@@ -1,52 +1,50 @@
-import { evidenceDelta, MAX_TURN_DELTA, SCORE_SCALE, clamp } from "@/lib/engine/scoreEngine";
-import { updateConfidence } from "@/lib/engine/confidenceEngine";
+import { clamp, posteriorEstimate } from "@/lib/engine/scoreEngine";
 import type { Evidence } from "@/lib/types/diagnosis";
 
 /**
  * Estimators compared in the study.
  *
- * Two of the questions we need to answer cannot be answered by calling the
- * engine as-is:
+ * `legacyRule` is the score update as it stood before the measurement study —
+ * an additive walk over evidence, damped by confidence. It is kept as a frozen
+ * baseline so the report can show what changed and by how much, and so a future
+ * regression back toward drift would be visible rather than silent.
  *
- *  - "how much of the result is driven by the hard-coded constants (12, ±15,
- *    0.18, κ=0.5)?" — the constants are module-level `const`s, so varying them
- *    requires a parameterised copy of the recursion;
- *  - "would a different update rule do better on the same evidence?" — needs a
- *    second estimator fed the identical stream.
- *
- * `currentRule` is that parameterised copy. `fidelity.spec.ts` pins it against
- * the shipped `evidenceDelta`, so if the engine's formula changes and this copy
- * is not updated, the suite fails rather than quietly measuring the wrong thing.
+ * It is a self-contained copy on purpose: it no longer tracks anything in
+ * `src/`, because what it describes is no longer there.
  */
 
 export interface ScoreParams {
-  /** `SCORE_SCALE` in scoreEngine.ts. */
+  /** Score points per unit of strength × reliability. */
   scale: number;
-  /** `MAX_TURN_DELTA` in scoreEngine.ts. */
+  /** Per-element, per-turn cap applied after summing the turn's deltas. */
   maxTurnDelta: number;
   /** Coefficient of the `1 - k·confidence` damping term. */
   dampingCoefficient: number;
+  /** Asymptotic confidence gain per unit of evidence. */
+  gainScale: number;
+  /** Multiplier for an evidence type that has already been seen. */
+  repeatNovelty: number;
 }
 
-export const CURRENT_PARAMS: ScoreParams = {
-  scale: SCORE_SCALE,
-  maxTurnDelta: MAX_TURN_DELTA,
+/** The constants as they were shipped before the fix. */
+export const LEGACY_PARAMS: ScoreParams = {
+  scale: 12,
+  maxTurnDelta: 15,
   dampingCoefficient: 0.5,
+  gainScale: 0.18,
+  repeatNovelty: 0.35,
 };
 
 function sign(direction: Evidence["direction"]): number {
   return direction === "positive" ? 1 : direction === "negative" ? -1 : 0;
 }
 
-/** One item's delta, with the engine's constants exposed as parameters. */
-export function parameterisedDelta(
-  e: Pick<Evidence, "strength" | "reliability" | "direction">,
-  confidenceBefore: number,
-  params: ScoreParams
-): number {
-  const s = sign(e.direction);
-  if (s === 0) return 0;
-  return s * e.strength * e.reliability * params.scale * (1 - params.dampingCoefficient * confidenceBefore);
+function legacyCapByTypeCount(typeCount: number): number {
+  if (typeCount <= 0) return 0;
+  if (typeCount === 1) return 0.4;
+  if (typeCount === 2) return 0.65;
+  if (typeCount === 3) return 0.85;
+  return 1.0;
 }
 
 export interface ElementEstimate {
@@ -55,81 +53,82 @@ export interface ElementEstimate {
 }
 
 /**
- * The app's rule: an additive walk over evidence, damped by confidence.
+ * The pre-fix rule.
  *
- * Note what the delta does *not* contain: the current score. Nothing pulls the
- * estimate back toward anything, so this is a random walk with drift, not a
- * converging estimator. That property is what E2 measures.
+ * Note what the delta does not contain: the current score. Nothing pulled the
+ * estimate back toward anything, so this was a random walk with drift rather
+ * than a converging estimator — the property E2 measures.
  */
-export function currentRule(evidenceByTurn: readonly (readonly Evidence[])[], params = CURRENT_PARAMS): ElementEstimate {
+export function legacyRule(
+  evidenceByTurn: readonly (readonly Evidence[])[],
+  params = LEGACY_PARAMS
+): ElementEstimate {
   let score = 50;
   let confidence = 0;
-  let typeSet: string[] = [];
+  const seenTypes = new Set<string>();
 
   for (const turnItems of evidenceByTurn) {
     if (turnItems.length === 0) continue;
     const confidenceBefore = confidence;
 
     let summed = 0;
-    for (const e of turnItems) summed += parameterisedDelta(e, confidenceBefore, params);
-    score = clamp(score + clamp(summed, -params.maxTurnDelta, params.maxTurnDelta), 0, 100);
+    let gainSum = 0;
+    for (const e of turnItems) {
+      const s = sign(e.direction);
+      if (s !== 0) {
+        summed +=
+          s *
+          e.strength *
+          e.reliability *
+          params.scale *
+          (1 - params.dampingCoefficient * confidenceBefore);
+      }
+      const novelty = seenTypes.has(e.type) ? params.repeatNovelty : 1;
+      seenTypes.add(e.type);
+      gainSum += params.gainScale * e.strength * e.reliability * novelty;
+    }
 
-    const updated = updateConfidence({
-      confidenceBefore,
-      evidenceThisTurn: turnItems,
-      typeSetBefore: typeSet,
-      contradictions: [],
-    });
-    confidence = updated.confidence;
-    typeSet = updated.typeSetAfter;
+    score = clamp(score + clamp(summed, -params.maxTurnDelta, params.maxTurnDelta), 0, 100);
+    confidence = Math.min(
+      confidenceBefore + (1 - confidenceBefore) * gainSum,
+      legacyCapByTypeCount(seenTypes.size)
+    );
   }
 
   return { score, confidence };
 }
 
 /**
- * Candidate replacement: a weighted posterior mean (Beta-Binomial).
+ * The rule now shipped in `src/lib/engine/scoreEngine.ts`.
  *
- * Each directional item is one observation — positive counts as 1, negative as
- * 0 — weighted by strength × reliability. A pseudo-count of `kappa` at 0.5 keeps
- * the estimate at 50 before any evidence arrives, which is the same neutral
- * prior the axis aggregation already uses.
- *
- *     score = 100 · (Σ wᵢxᵢ + 0.5κ) / (Σ wᵢ + κ)
- *
- * Three properties the current rule lacks fall out for free:
- *   1. it converges to the true rate as evidence accumulates (consistency);
- *   2. it is order-invariant — the sum does not care about sequence;
- *   3. confidence has a definition rather than a shape: the posterior standard
- *      deviation shrinks as 1/√n, so it can be *checked* against actual error.
- *
- * This is not wired into the app. It exists so the report can say how much of
- * the measured error is inherent to the task and how much is the update rule's.
+ * This wrapper exists so experiments can score an evidence stream directly
+ * without running a whole interview. `report.spec.ts` pins it against the
+ * engine's own `posteriorEstimate`, so it cannot drift into measuring a
+ * different formula than the one users get.
  */
-export function posteriorRule(
-  evidenceByTurn: readonly (readonly Evidence[])[],
-  kappa = 2
-): ElementEstimate {
-  let weightedSuccess = 0.5 * kappa;
+export function currentRule(evidenceByTurn: readonly (readonly Evidence[])[]): ElementEstimate {
+  const flat = evidenceByTurn.flat();
+  const estimate = posteriorEstimate(flat);
+  return { score: estimate.score, confidence: 0 };
+}
+
+/**
+ * The new rule with its pseudo-count exposed, for the sensitivity experiment.
+ *
+ * κ is the only free constant the posterior rule has. Mirrors
+ * `posteriorEstimate` exactly at κ = SCORE_PSEUDO_COUNT, which E7 asserts.
+ */
+export function posteriorWithPseudoCount(evidence: readonly Evidence[], kappa: number): number {
+  let weightedPositive = 0.5 * kappa;
   let weightTotal = kappa;
-
-  for (const turnItems of evidenceByTurn) {
-    for (const e of turnItems) {
-      const s = sign(e.direction);
-      if (s === 0) continue;
-      const w = e.strength * e.reliability;
-      weightedSuccess += w * (s > 0 ? 1 : 0);
-      weightTotal += w;
-    }
+  for (const e of evidence) {
+    const s = sign(e.direction);
+    if (s === 0) continue;
+    const w = e.strength * e.reliability;
+    weightTotal += w;
+    if (s > 0) weightedPositive += w;
   }
-
-  const p = weightedSuccess / weightTotal;
-  // Posterior SD of a Beta(α,β) with α+β = weightTotal, mapped to the 0-100 scale.
-  const posteriorSd = Math.sqrt((p * (1 - p)) / (weightTotal + 1));
-  // Max SD is 0.5 (p=0.5, no data); confidence is how far below that we are.
-  const confidence = clamp(1 - posteriorSd / 0.5, 0, 1);
-
-  return { score: clamp(p * 100, 0, 100), confidence };
+  return clamp((weightedPositive / weightTotal) * 100, 0, 100);
 }
 
 /** Groups an element's evidence into per-turn batches, ordered by turn. */
@@ -141,14 +140,4 @@ export function groupByTurn(evidence: readonly Evidence[]): Evidence[][] {
     else byTurn.set(e.turn_id, [e]);
   }
   return [...byTurn.entries()].sort((a, b) => a[0] - b[0]).map(([, items]) => items);
-}
-
-/** Guards the replica against drift from the shipped formula. */
-export function replicaMatchesEngine(
-  e: Pick<Evidence, "strength" | "reliability" | "direction">,
-  confidenceBefore: number
-): boolean {
-  const mine = parameterisedDelta(e, confidenceBefore, CURRENT_PARAMS);
-  const theirs = evidenceDelta(e, confidenceBefore);
-  return Math.abs(mine - theirs) < 1e-12;
 }

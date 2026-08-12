@@ -1,49 +1,63 @@
 import { describe, expect, it } from "vitest";
 import {
   applyContradictionPenalty,
+  computeConfidence,
   confidenceCapByTypeCount,
-  recomputeConfidenceFromEvidence,
-  updateConfidence,
+  CONTRADICTION_CAP,
+  precisionConfidence,
 } from "@/lib/engine/confidenceEngine";
-import type { EvidenceType } from "@/lib/types/diagnosis";
+import { PRIOR_SD, posteriorEstimate } from "@/lib/engine/scoreEngine";
+import type { EvidenceDirection, EvidenceType } from "@/lib/types/diagnosis";
 
-/** §11 — confidence is about evidential support, and is deliberately hard to max. */
+/** §11 — confidence is the estimate's own error bar, and is deliberately hard to max. */
 
-function items(types: EvidenceType[], strength = 0.9, reliability = 0.9) {
-  return types.map((type) => ({ type, strength, reliability }));
+/** Each item lands in its own turn, i.e. counts as an independent occasion. */
+let turnCounter = 0;
+function items(
+  types: EvidenceType[],
+  direction: EvidenceDirection = "positive",
+  strength = 0.9,
+  reliability = 0.9
+) {
+  return types.map((type) => ({ type, strength, reliability, direction, turn_id: ++turnCounter }));
 }
 
 describe("confidence accumulation", () => {
-  it("rises as evidence arrives", () => {
-    const first = updateConfidence({
-      confidenceBefore: 0,
-      evidenceThisTurn: items(["personal_experience"]),
-      typeSetBefore: [],
-      contradictions: [],
-    });
-    expect(first.confidence).toBeGreaterThan(0);
+  it("is zero before any evidence", () => {
+    expect(computeConfidence([], []).confidence).toBe(0);
+    expect(precisionConfidence(PRIOR_SD)).toBe(0);
+  });
 
-    const second = updateConfidence({
-      confidenceBefore: first.confidence,
-      evidenceThisTurn: items(["decision_example"]),
-      typeSetBefore: first.typeSetAfter,
-      contradictions: [],
-    });
+  it("rises as evidence arrives", () => {
+    const first = computeConfidence(items(["personal_experience"]), []);
+    const second = computeConfidence(items(["personal_experience", "decision_example"]), []);
+    expect(first.confidence).toBeGreaterThan(0);
     expect(second.confidence).toBeGreaterThan(first.confidence);
   });
 
-  it("stays independent of score: confidence can rise on neutral evidence", () => {
-    const result = updateConfidence({
-      confidenceBefore: 0,
-      evidenceThisTurn: [
-        { type: "reasoning_pattern" as EvidenceType, strength: 0.8, reliability: 0.8 },
-      ],
-      typeSetBefore: [],
-      contradictions: [],
-    });
-    // The same item contributes 0 score delta when its direction is neutral,
-    // yet still adds support for the estimate.
+  it("stays independent of score: confidence rises on neutral evidence", () => {
+    // The same item contributes 0 to the score when its direction is neutral,
+    // yet still adds support for the estimate (§1.1).
+    const result = computeConfidence(items(["reasoning_pattern"], "neutral"), []);
     expect(result.confidence).toBeGreaterThan(0);
+    expect(posteriorEstimate(items(["reasoning_pattern"], "neutral")).score).toBe(50);
+  });
+
+  it("tracks the posterior rather than the count of items", () => {
+    // Confidence is a function of the error bar, so it must agree with it.
+    const evidence = items(["personal_experience", "decision_example", "value_statement"]);
+    const { posteriorSd } = posteriorEstimate(evidence);
+    expect(computeConfidence(evidence, []).raw).toBeCloseTo(precisionConfidence(posteriorSd), 12);
+  });
+
+  it("is order-invariant", () => {
+    const evidence = items(
+      ["personal_experience", "decision_example", "value_statement", "self_description"],
+      "positive"
+    );
+    const forward = computeConfidence(evidence, []);
+    const reversed = computeConfidence([...evidence].reverse(), []);
+    expect(reversed.confidence).toBeCloseTo(forward.confidence, 12);
   });
 });
 
@@ -56,62 +70,33 @@ describe("diversity cap (§11.2)", () => {
   });
 
   it("caps a pile of same-type evidence at 0.40", () => {
-    let confidence = 0;
-    let typeSet: string[] = [];
-    for (let i = 0; i < 30; i++) {
-      const result = updateConfidence({
-        confidenceBefore: confidence,
-        evidenceThisTurn: items(["self_description"], 1, 1),
-        typeSetBefore: typeSet,
-        contradictions: [],
-      });
-      confidence = result.confidence;
-      typeSet = result.typeSetAfter;
-    }
-    expect(confidence).toBeCloseTo(0.4, 5);
+    const thirty = items(Array.from({ length: 30 }, () => "self_description" as EvidenceType), "positive", 1, 1);
+    expect(computeConfidence(thirty, []).confidence).toBeCloseTo(0.4, 10);
   });
 
   it("allows above 0.65 once a third type appears", () => {
-    let confidence = 0;
-    let typeSet: string[] = [];
     const types: EvidenceType[] = ["self_description", "personal_experience", "decision_example"];
-    for (let i = 0; i < 30; i++) {
-      const result = updateConfidence({
-        confidenceBefore: confidence,
-        evidenceThisTurn: items([types[i % 3]], 1, 1),
-        typeSetBefore: typeSet,
-        contradictions: [],
-      });
-      confidence = result.confidence;
-      typeSet = result.typeSetAfter;
-    }
-    expect(confidence).toBeGreaterThan(0.65);
-    expect(confidence).toBeLessThanOrEqual(0.85);
+    const thirty = items(
+      Array.from({ length: 30 }, (_, i) => types[i % 3]),
+      "positive",
+      1,
+      1
+    );
+    const result = computeConfidence(thirty, []);
+    expect(result.confidence).toBeGreaterThan(0.65);
+    expect(result.confidence).toBeLessThanOrEqual(0.85);
   });
 
-  it("discounts repeat types within a single turn", () => {
-    const varied = updateConfidence({
-      confidenceBefore: 0,
-      evidenceThisTurn: items(["personal_experience", "decision_example"]),
-      typeSetBefore: [],
-      contradictions: [],
-    });
-    const repeated = updateConfidence({
-      confidenceBefore: 0,
-      evidenceThisTurn: items(["personal_experience", "personal_experience"]),
-      typeSetBefore: [],
-      contradictions: [],
-    });
-    expect(repeated.confidence).toBeLessThan(varied.confidence);
+  it("reports which ceiling applied", () => {
+    expect(computeConfidence(items(["self_description"]), []).cap).toBe(0.4);
+    expect(computeConfidence(items(["self_description", "value_statement"]), []).cap).toBe(0.65);
   });
 });
 
 describe("contradiction penalty (§11.3)", () => {
   it("reduces confidence for unresolved contradictions only", () => {
     const base = 0.8;
-    const unresolved = applyContradictionPenalty(base, [
-      { severity: 0.8, status: "unresolved" },
-    ]);
+    const unresolved = applyContradictionPenalty(base, [{ severity: 0.8, status: "unresolved" }]);
     const resolved = applyContradictionPenalty(base, [{ severity: 0.8, status: "resolved" }]);
 
     expect(unresolved).toBeCloseTo(0.8 * (1 - 0.25 * 0.8), 5);
@@ -127,41 +112,51 @@ describe("contradiction penalty (§11.3)", () => {
     expect(two).toBeLessThan(one);
   });
 
-  it("restores confidence when the contradiction is resolved", () => {
-    const evidence = [
-      { type: "personal_experience" as EvidenceType, strength: 0.9, reliability: 0.9, turn_id: 1 },
-      { type: "decision_example" as EvidenceType, strength: 0.9, reliability: 0.9, turn_id: 2 },
-    ];
-    const penalised = recomputeConfidenceFromEvidence(evidence, [
-      { severity: 0.9, status: "unresolved" },
-    ]);
-    const restored = recomputeConfidenceFromEvidence(evidence, [
-      { severity: 0.9, status: "resolved" },
-    ]);
-    expect(restored.confidence).toBeGreaterThan(penalised.confidence);
+  it("stops compounding past the cap", () => {
+    // Contradictions are generated by pairing every positive item against every
+    // negative one, so their count grows with the product. Without a cap, an
+    // element with plenty of mixed evidence had its confidence driven to zero
+    // and could never satisfy the conf ≥ 0.75 exit condition.
+    const many = Array.from({ length: 120 }, () => ({ severity: 1, status: "unresolved" as const }));
+    const capped = applyContradictionPenalty(1, many);
+    const exactlyCap = applyContradictionPenalty(
+      1,
+      Array.from({ length: CONTRADICTION_CAP }, () => ({ severity: 1, status: "unresolved" as const }))
+    );
+
+    expect(capped).toBeCloseTo(exactlyCap, 12);
+    expect(capped).toBeGreaterThan(0.4);
   });
 
-  it("replays turn by turn so a recompute matches the incremental path", () => {
-    const evidence = [
-      { type: "personal_experience" as EvidenceType, strength: 0.8, reliability: 0.7, turn_id: 1 },
-      { type: "decision_example" as EvidenceType, strength: 0.6, reliability: 0.9, turn_id: 2 },
-      { type: "value_statement" as EvidenceType, strength: 0.7, reliability: 0.7, turn_id: 3 },
+  it("applies the most severe contradictions first", () => {
+    const mild = { severity: 0.1, status: "unresolved" as const };
+    const severe = { severity: 1, status: "unresolved" as const };
+    const withSevere = applyContradictionPenalty(1, [mild, mild, mild, severe]);
+    const mildOnly = applyContradictionPenalty(1, [mild, mild, mild]);
+    expect(withSevere).toBeLessThan(mildOnly);
+  });
+
+  it("restores confidence when the contradiction is resolved", () => {
+    const evidence = items(["personal_experience", "decision_example"]);
+    const penalised = computeConfidence(evidence, [{ severity: 0.9, status: "unresolved" }]);
+    const restored = computeConfidence(evidence, [{ severity: 0.9, status: "resolved" }]);
+
+    expect(restored.confidence).toBeGreaterThan(penalised.confidence);
+    // Recomputation is the only path, so a lifted discount leaves no residue.
+    expect(restored.confidence).toBeCloseTo(computeConfidence(evidence, []).confidence, 12);
+  });
+
+  it("keeps mixed evidence uncertain even without recorded contradictions", () => {
+    // The posterior does this on its own: evidence pointing both ways lands the
+    // rate near 0.5, which is where its variance is highest.
+    const consistent = items(["personal_experience", "decision_example", "value_statement"], "positive", 1, 1);
+    const mixed = [
+      ...items(["personal_experience"], "positive", 1, 1),
+      ...items(["decision_example"], "negative", 1, 1),
+      ...items(["value_statement"], "positive", 1, 1),
     ];
-
-    let confidence = 0;
-    let typeSet: string[] = [];
-    for (const item of evidence) {
-      const step = updateConfidence({
-        confidenceBefore: confidence,
-        evidenceThisTurn: [item],
-        typeSetBefore: typeSet,
-        contradictions: [],
-      });
-      confidence = step.confidence;
-      typeSet = step.typeSetAfter;
-    }
-
-    const replayed = recomputeConfidenceFromEvidence(evidence, []);
-    expect(replayed.confidence).toBeCloseTo(confidence, 10);
+    expect(computeConfidence(mixed, []).confidence).toBeLessThan(
+      computeConfidence(consistent, []).confidence
+    );
   });
 });

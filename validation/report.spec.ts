@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { runAll, type Finding } from "./experiments";
-import { replicaMatchesEngine } from "./lib/estimators";
 import { makeRng } from "./lib/rng";
+import { makePersona } from "./lib/persona";
+import { recordBatches, replayTurns, runInterview } from "./lib/harness";
+import { posteriorEstimate } from "@/lib/engine/scoreEngine";
+import type { Evidence, EvidenceDraft } from "@/lib/types/diagnosis";
 
 /**
  * Entry point: `npm run validate`.
@@ -77,15 +80,39 @@ function toMarkdown(findings: Finding[]): string {
 }
 
 describe("validation study", () => {
-  it("replica of the score rule still matches the shipped engine", () => {
-    const rng = makeRng(4321);
-    for (let i = 0; i < 2000; i++) {
-      const e = {
-        strength: rng.range(0, 1),
-        reliability: rng.range(0, 1),
-        direction: rng.pick(["positive", "negative", "neutral"] as const),
-      };
-      expect(replicaMatchesEngine(e, rng.range(0, 1))).toBe(true);
+  it("a full interview leaves every element at the posterior of its own evidence", () => {
+    // End-to-end check that the state the app persists is the estimate the
+    // formula defines — no accumulated residue, no path dependence anywhere in
+    // the turn pipeline. Everything the study measures rests on this.
+    const run = runInterview(makePersona("P-fidelity", "fidelity", 606), { turns: 40, seed: 909 });
+
+    const byElement = new Map<string, Evidence[]>();
+    for (const e of run.evidence) {
+      const list = byElement.get(e.element_id);
+      if (list) list.push(e);
+      else byElement.set(e.element_id, [e]);
+    }
+
+    let checked = 0;
+    for (const [elementId, evidence] of byElement) {
+      const state = run.states.get(elementId);
+      expect(state).toBeDefined();
+      expect(state!.score).toBeCloseTo(posteriorEstimate(evidence).score, 10);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(20);
+  });
+
+  it("is invariant to the order the same answers arrive in", () => {
+    const persona = makePersona("P-order-spec", "order", 111);
+    const batches = recordBatches(persona, { turns: 30, seed: 222 });
+    const baseline = replayTurns(batches);
+    const permuted = replayTurns(makeRng(333).shuffle(batches) as EvidenceDraft[][]);
+
+    for (const [elementId, state] of baseline.states) {
+      const other = permuted.states.get(elementId);
+      expect(other).toBeDefined();
+      expect(other!.score).toBeCloseTo(state.score, 10);
     }
   });
 

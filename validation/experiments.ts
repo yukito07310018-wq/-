@@ -27,12 +27,13 @@ import {
   type CalibrationBin,
 } from "./lib/metrics";
 import {
-  CURRENT_PARAMS,
-  currentRule,
   groupByTurn,
-  posteriorRule,
+  LEGACY_PARAMS,
+  legacyRule,
+  posteriorWithPseudoCount,
   type ScoreParams,
 } from "./lib/estimators";
+import { SCORE_PSEUDO_COUNT } from "@/lib/engine/scoreEngine";
 
 /**
  * The study.
@@ -134,6 +135,10 @@ function deepSelector(pool: readonly string[], perTurn: number) {
  * here the interview is pointed at 8 elements only, and the evidence per element
  * is driven up. An estimator's error must fall toward zero. If error instead
  * grows, the rule is not converging on anything.
+ *
+ * `legacy` is the additive rule the app shipped before this study, run over the
+ * identical evidence — so the two columns differ only in how the evidence is
+ * read.
  */
 export function e2Consistency(): Finding {
   const pool = ELEMENT_IDS.slice(0, 8);
@@ -142,7 +147,7 @@ export function e2Consistency(): Finding {
 
   const rows = turnCounts.map((turns) => {
     const estCurrent: number[] = [];
-    const estPosterior: number[] = [];
+    const estLegacy: number[] = [];
     const truth: number[] = [];
     const confidences: number[] = [];
 
@@ -159,8 +164,8 @@ export function e2Consistency(): Finding {
         estCurrent.push(state.score);
         confidences.push(state.confidence);
         truth.push(persona.theta.get(id) ?? 50);
-        // Same evidence, different rule.
-        estPosterior.push(posteriorRule(groupByTurn(byElement.get(id) ?? [])).score);
+        // Same evidence, the rule as it stood before the fix.
+        estLegacy.push(legacyRule(groupByTurn(byElement.get(id) ?? [])).score);
       }
     });
 
@@ -172,8 +177,8 @@ export function e2Consistency(): Finding {
       current_r: round(pearson(estCurrent, truth), 3),
       current_rank_r: round(spearman(estCurrent, truth), 3),
       current_saturation: round(saturationRate(estCurrent), 3),
-      posterior_rmse: round(rmse(estPosterior, truth), 1),
-      posterior_r: round(pearson(estPosterior, truth), 3),
+      legacy_rmse: round(rmse(estLegacy, truth), 1),
+      legacy_saturation: round(saturationRate(estLegacy), 3),
       mean_confidence: round(mean(confidences), 3),
     };
   });
@@ -188,16 +193,16 @@ export function e2Consistency(): Finding {
     verdict: currentImproves ? "pass" : "fail",
     headline:
       `証拠が1要素あたり${first.evidence_per_element}件→${last.evidence_per_element}件に増えると、` +
-      `現行式のRMSEは${first.current_rmse}点→${last.current_rmse}点と**悪化**し、` +
-      `${round(last.current_saturation * 100, 0)}%の要素が0か100に貼り付く。` +
-      `同じ証拠を事後平均式で読むと${first.posterior_rmse}点→${last.posterior_rmse}点に改善する。` +
-      `ただし順位相関は${last.current_rank_r}を保つので、壊れているのは目盛りであって並び順ではない。`,
+      `現行式のRMSEは${first.current_rmse}点→${last.current_rmse}点に改善し、` +
+      `Confidenceは${first.mean_confidence}→${last.mean_confidence}に上がる。` +
+      `同じ証拠を修正前の加算式で読むと${first.legacy_rmse}点→${last.legacy_rmse}点と悪化し、` +
+      `${round(last.legacy_saturation * 100, 0)}%の要素が0か100に貼り付いていた。`,
     metrics: {
       rmse_at_min_evidence: first.current_rmse,
       rmse_at_max_evidence: last.current_rmse,
       saturation_at_max_evidence: last.current_saturation,
       rank_correlation_at_max_evidence: last.current_rank_r,
-      posterior_rmse_at_max_evidence: last.posterior_rmse,
+      legacy_rmse_at_max_evidence: last.legacy_rmse,
       confidence_at_max_evidence: last.mean_confidence,
     },
     detail: { rows },
@@ -278,12 +283,13 @@ export function e3Calibration(): Finding {
     question: "Confidenceが高いほど推定は正確か（キャリブレーション）",
     verdict: monotoneDown && slope < 0 ? "pass" : "warn",
     headline:
-      `単調ではない。誤差はConfidence ${best.label} の帯で最小（平均${round(best.meanAbsError, 1)}点、n=${best.count}）になり、` +
-      (worsensAbove
-        ? `それより高い帯ではむしろ増える（${above.map((b) => `${b.label}帯で${round(b.meanAbsError, 1)}点/n=${b.count}`).join("、")}）。`
-        : "それより上の帯ではほぼ横ばい。") +
-      `そもそもConfidenceが0.4以上に達したサンプルは全体の${round(highConfidenceShare * 100, 1)}%しかなく、` +
-      `「Confidenceが高い＝信頼してよい」という画面上の約束は、実際にはほとんど検証されない領域にある。`,
+      `Confidence帯ごとの平均絶対誤差は ` +
+      populated.map((b) => `${b.label}→${round(b.meanAbsError, 1)}点(n=${b.count})`).join("、") +
+      `。おおむね右下がりだが厳密には単調ではない` +
+      (worsensAbove ? `（${best.label}帯より上で一度増える）` : "") +
+      `。加えて、Confidenceが0.4以上に達したサンプルは全体の${round(highConfidenceShare * 100, 1)}%しかない。` +
+      `未解決の矛盾が3件以上ある要素は上限が 0.75³≒0.42 に張り付くためで、` +
+      `「高Confidence＝信頼してよい」という画面上の約束は、実際にはほとんど到達しない領域にある。`,
     metrics: {
       confidence_error_correlation: round(slope, 3),
       monotone_decreasing: monotoneDown ? 1 : 0,
@@ -497,27 +503,30 @@ export function e6Discriminant(): Finding {
 // ---------------------------------------------------------------------------
 
 /**
- * How much of the answer is the person, and how much is the number 12?
+ * How much of the answer is the person, and how much is a chosen constant?
  *
- * SCORE_SCALE=12, MAX_TURN_DELTA=15, damping 0.5 and κ=0.5 are authored
- * constants with no stated derivation. If perturbing them by ±25% reorders the
- * results, then the ordering is a property of the constants, not of the subject.
+ * The old rule had four (12, ±15, damping 0.5, κ=0.5), none with a stated
+ * derivation. The posterior rule has one — the pseudo-count κ that holds an
+ * unmeasured element at 50 — plus the κ in axis aggregation. Fewer free
+ * constants is itself the result worth reporting, but the remaining one still
+ * has to be shown not to be doing the work.
  */
 export function e7Sensitivity(): Finding {
   const pool = ELEMENT_IDS.slice(0, 8);
   const cohort = makePersonaCohort(12, 5150);
 
-  const variants: { label: string; params: ScoreParams }[] = [
-    { label: "scale 12→9", params: { ...CURRENT_PARAMS, scale: 9 } },
-    { label: "scale 12→15", params: { ...CURRENT_PARAMS, scale: 15 } },
-    { label: "cap 15→11", params: { ...CURRENT_PARAMS, maxTurnDelta: 11 } },
-    { label: "cap 15→19", params: { ...CURRENT_PARAMS, maxTurnDelta: 19 } },
-    { label: "damping 0.5→0.3", params: { ...CURRENT_PARAMS, dampingCoefficient: 0.3 } },
-    { label: "damping 0.5→0.7", params: { ...CURRENT_PARAMS, dampingCoefficient: 0.7 } },
+  const pseudoCounts = [1, 2, 4, 8];
+  const legacyVariants: { label: string; params: ScoreParams }[] = [
+    { label: "legacy scale 12→9", params: { ...LEGACY_PARAMS, scale: 9 } },
+    { label: "legacy scale 12→15", params: { ...LEGACY_PARAMS, scale: 15 } },
+    { label: "legacy damping 0.5→0.3", params: { ...LEGACY_PARAMS, dampingCoefficient: 0.3 } },
   ];
 
+  const truth: number[] = [];
   const baseScores: number[] = [];
-  const variantScores = new Map<string, number[]>(variants.map((v) => [v.label, []]));
+  const byPseudoCount = new Map<number, number[]>(pseudoCounts.map((k) => [k, []]));
+  const legacyBase: number[] = [];
+  const legacyVariantScores = new Map<string, number[]>(legacyVariants.map((v) => [v.label, []]));
 
   cohort.forEach((persona, i) => {
     const run = runInterview(persona, {
@@ -529,41 +538,57 @@ export function e7Sensitivity(): Finding {
     for (const id of pool) {
       const own = byElement.get(id) ?? [];
       if (own.length === 0) continue;
+      truth.push(persona.theta.get(id) ?? 50);
+      baseScores.push(run.states.get(id)!.score);
+      for (const k of pseudoCounts) byPseudoCount.get(k)!.push(posteriorWithPseudoCount(own, k));
+
       const grouped = groupByTurn(own);
-      baseScores.push(currentRule(grouped, CURRENT_PARAMS).score);
-      for (const v of variants) {
-        variantScores.get(v.label)!.push(currentRule(grouped, v.params).score);
+      legacyBase.push(legacyRule(grouped, LEGACY_PARAMS).score);
+      for (const v of legacyVariants) {
+        legacyVariantScores.get(v.label)!.push(legacyRule(grouped, v.params).score);
       }
     }
   });
 
-  const rows = variants.map((v) => {
-    const scores = variantScores.get(v.label)!;
+  const rows = pseudoCounts.map((k) => {
+    const scores = byPseudoCount.get(k)!;
     return {
-      variant: v.label,
+      variant: `pseudo-count κ=${k}${k === SCORE_PSEUDO_COUNT ? " (default)" : ""}`,
       rank_correlation_vs_default: round(spearman(baseScores, scores), 3),
       mean_abs_score_shift: round(mean(scores.map((s, i) => Math.abs(s - baseScores[i]!))), 1),
+      rmse_vs_truth: round(rmse(scores, truth), 1),
     };
   });
 
-  // κ only affects axis aggregation; measured separately on the same states.
+  const legacyRows = legacyVariants.map((v) => {
+    const scores = legacyVariantScores.get(v.label)!;
+    return {
+      variant: v.label,
+      mean_abs_score_shift: round(mean(scores.map((s, i) => Math.abs(s - legacyBase[i]!))), 1),
+    };
+  });
+
   const kappaRow = kappaSensitivity();
-  const worstRank = Math.min(...rows.map((r) => r.rank_correlation_vs_default));
-  const worstShift = Math.max(...rows.map((r) => r.mean_abs_score_shift));
+  const perturbed = rows.filter((r) => !r.variant.includes("default"));
+  const worstRank = Math.min(...perturbed.map((r) => r.rank_correlation_vs_default));
+  const worstShift = Math.max(...perturbed.map((r) => r.mean_abs_score_shift));
+  const legacyWorstShift = Math.max(...legacyRows.map((r) => r.mean_abs_score_shift));
 
   return {
     id: "E7",
-    question: "手で決めた定数（12・±15・0.5・κ）に結果はどれだけ依存するか",
+    question: "手で決めた定数に結果はどれだけ依存するか",
     verdict: worstShift < 5 ? "pass" : worstShift < 15 ? "warn" : "fail",
     headline:
-      `定数を±25%動かすと要素スコアは平均最大${worstShift}点ずれる。` +
-      `順位相関は最低${worstRank}なので、順位はほぼ保たれるが絶対値は保たれない。`,
+      `現行式の自由定数は疑似カウントκ1つだけ。κを2→1/4/8と振っても要素スコアの変化は平均最大${worstShift}点、` +
+      `順位相関は最低${worstRank}。` +
+      `修正前の加算式では、定数を±25%動かすだけで平均最大${legacyWorstShift}点動いていた。`,
     metrics: {
       worst_mean_abs_shift: worstShift,
       worst_rank_correlation: worstRank,
-      kappa_max_axis_shift: kappaRow.maxShift,
+      legacy_worst_mean_abs_shift: legacyWorstShift,
+      axis_kappa_max_shift: kappaRow.maxShift,
     },
-    detail: { rows, kappa: kappaRow.rows },
+    detail: { rows, legacy: legacyRows, axis_kappa: kappaRow.rows },
   };
 }
 
@@ -611,14 +636,15 @@ function axisScoreWithKappa(
 /**
  * Separates "this task is hard" from "this rule is wrong".
  *
- * The posterior-mean rule reads the *same* evidence the engine read. Whatever
- * accuracy it reaches is available to the app for free; the gap between the two
- * is the cost of the current update rule, not of the interview.
+ * Both rules read the *same* evidence, at the app's own operating point. If the
+ * gap here is small, then at 30 turns the binding constraint is how much
+ * evidence exists per element, not how it is read — and no change to the formula
+ * can substitute for asking more questions about fewer things.
  */
 export function e8RuleComparison(): Finding {
   const cohort = makePersonaCohort(24, 24680);
   const estCurrent: number[] = [];
-  const estPosterior: number[] = [];
+  const estLegacy: number[] = [];
   const truth: number[] = [];
 
   cohort.forEach((persona, i) => {
@@ -628,31 +654,32 @@ export function e8RuleComparison(): Finding {
       const own = byElement.get(id) ?? [];
       if (own.length === 0) continue;
       estCurrent.push(run.states.get(id)!.score);
-      estPosterior.push(posteriorRule(groupByTurn(own)).score);
+      estLegacy.push(legacyRule(groupByTurn(own)).score);
       truth.push(persona.theta.get(id) ?? 50);
     }
   });
 
   const rCurrent = pearson(estCurrent, truth);
-  const rPosterior = pearson(estPosterior, truth);
+  const rLegacy = pearson(estLegacy, truth);
   const errCurrent = rmse(estCurrent, truth);
-  const errPosterior = rmse(estPosterior, truth);
+  const errLegacy = rmse(estLegacy, truth);
 
   return {
     id: "E8",
     question: "更新式を替えれば直るのか、それとも証拠量が足りないのか",
     verdict: "warn",
     headline:
-      `現行アプリの設定（30ターン・1要素あたり証拠2件）では、現行式 RMSE=${round(errCurrent, 1)}点に対し ` +
-      `事後平均式は ${round(errPosterior, 1)}点で、ほぼ変わらない。` +
-      `つまりこの条件で効いているのは更新式ではなく証拠量の不足であり、` +
-      `式を直しても30ターンのままでは要素スコアは改善しない（E2は証拠が増えた場合を示す）。`,
+      `現行アプリの設定（30ターン・1要素あたり証拠2件）では、現行式 RMSE=${round(errCurrent, 1)}点、` +
+      `修正前の加算式 ${round(errLegacy, 1)}点で、差はわずか。` +
+      `この条件で効いているのは更新式ではなく証拠量の不足で、` +
+      `式を直しても30ターン・100要素のままでは要素スコアは意味を持たない。` +
+      `更新式の修正が効くのは証拠が増えたとき（E2）。`,
     metrics: {
       current_r: round(rCurrent, 3),
       current_rmse: round(errCurrent, 2),
-      posterior_r: round(rPosterior, 3),
-      posterior_rmse: round(errPosterior, 2),
-      rmse_reduction_points: round(errCurrent - errPosterior, 2),
+      legacy_r: round(rLegacy, 3),
+      legacy_rmse: round(errLegacy, 2),
+      rmse_reduction_points: round(errLegacy - errCurrent, 2),
     },
   };
 }
@@ -673,17 +700,23 @@ export function e9ExtractorBias(): Finding {
   const rows = biases.map((positiveBias) => {
     const respondent: RespondentConfig = { ...IDEAL_RESPONDENT, positiveBias };
     const est: number[] = [];
+    const estLegacy: number[] = [];
     const truth: number[] = [];
     cohort.forEach((persona, i) => {
       const run = runInterview(persona, { turns: APP_TURNS, seed: 52000 + i, respondent });
       const ids = measuredElements(run);
+      const byElement = evidenceByElement(run);
       est.push(...scoresOf(run, ids));
       truth.push(...truthVector(persona, ids));
+      for (const id of ids) {
+        estLegacy.push(legacyRule(groupByTurn(byElement.get(id) ?? [])).score);
+      }
     });
     return {
       extractor_positive_bias: positiveBias,
       mean_score: round(mean(est), 1),
       bias_points: round(bias(est, truth), 1),
+      legacy_bias_points: round(bias(estLegacy, truth), 1),
       rmse: round(rmse(est, truth), 1),
       r: round(pearson(est, truth), 3),
     };
@@ -691,17 +724,28 @@ export function e9ExtractorBias(): Finding {
 
   const worst = rows[rows.length - 1]!;
   const clean = rows[0]!;
+  const tilt = worst.extractor_positive_bias * 100;
+  // A perfectly faithful estimator passes a tilt through 1:1. Below 1 the engine
+  // damps it; above 1 it would be manufacturing bias of its own.
+  const amplification = (worst.bias_points - clean.bias_points) / tilt;
+  const legacyAmplification = (worst.legacy_bias_points - clean.legacy_bias_points) / tilt;
+
   return {
     id: "E9",
     question: "抽出側がわずかに肯定寄りだと、結果はどれだけ動くか",
-    verdict: Math.abs(worst.bias_points - clean.bias_points) < 5 ? "pass" : "fail",
+    verdict: amplification < 1 ? "pass" : "fail",
     headline:
-      `抽出が20ポイント肯定に傾くと、平均スコアは${clean.mean_score}点→${worst.mean_score}点、` +
-      `真値からの偏りは${clean.bias_points}点→${worst.bias_points}点になる。`,
+      `抽出が${tilt}ポイント肯定に傾くと、平均スコアは${clean.mean_score}点→${worst.mean_score}点、` +
+      `真値からの偏りは${clean.bias_points}点→${worst.bias_points}点になる。` +
+      `増幅率は${round(amplification, 2)}で、1を下回るので engine 側が偏りを作っているわけではない` +
+      `（1.0 なら抽出の傾きをそのまま通す忠実な推定器）。` +
+      `修正前の加算式では${round(legacyAmplification, 2)}だった。` +
+      `推定が証拠に忠実になったぶん、抽出の偏りも素直に通るようになっている。`,
     metrics: {
       bias_at_zero: clean.bias_points,
-      bias_at_20pt_tilt: worst.bias_points,
-      amplification: round((worst.bias_points - clean.bias_points) / 20, 2),
+      bias_at_tilt: worst.bias_points,
+      amplification: round(amplification, 2),
+      legacy_amplification: round(legacyAmplification, 2),
     },
     detail: { rows },
   };
@@ -758,23 +802,30 @@ export function e10ConfidenceCollapse(): Finding {
   });
 
   const peak = rows.reduce((a, b) => (b.mean_confidence > a.mean_confidence ? b : a));
+  const first = rows[0]!;
   const last = rows[rows.length - 1]!;
+  const monotone = last.mean_confidence >= peak.mean_confidence;
 
   return {
     id: "E10",
     question: "証拠が増えるとConfidenceは上がるのか、下がるのか",
-    verdict: last.mean_confidence >= peak.mean_confidence ? "pass" : "fail",
-    headline:
-      `Confidenceは証拠${peak.evidence_per_element}件で${peak.mean_confidence}に達したあと下降し、` +
-      `${last.evidence_per_element}件では${last.mean_confidence}まで落ちる。` +
-      `原因は矛盾ペナルティの累乗で、1要素あたりの未解決矛盾が${last.unresolved_contradictions_per_element}件に増えるため。` +
-      `矛盾は positive×negative の総当たりで生成されるので証拠件数の2乗で増え、` +
-      `ペナルティ (1−0.25·severity) がその回数だけ掛かる。` +
-      `結果として「終了条件 conf ≥ 0.75」は対話を延ばすほど遠のく。`,
+    verdict: monotone ? "pass" : "fail",
+    headline: monotone
+      ? `Confidenceは証拠${first.evidence_per_element}件で${first.mean_confidence}、` +
+        `${last.evidence_per_element}件で${last.mean_confidence}と単調に上がる。` +
+        `1要素あたりの未解決矛盾は${last.unresolved_contradictions_per_element}件まで増えるが、` +
+        `ペナルティを最も重い${3}件に制限したため、件数がそのまま累乗されることはなくなった。`
+      : `Confidenceは証拠${peak.evidence_per_element}件で${peak.mean_confidence}に達したあと下降し、` +
+        `${last.evidence_per_element}件では${last.mean_confidence}まで落ちる。` +
+        `原因は矛盾ペナルティの累乗で、1要素あたりの未解決矛盾が${last.unresolved_contradictions_per_element}件に増えるため。` +
+        `矛盾は positive×negative の総当たりで生成されるので証拠件数の2乗で増え、` +
+        `ペナルティ (1−0.25·severity) がその回数だけ掛かる。` +
+        `結果として「終了条件 conf ≥ 0.75」は対話を延ばすほど遠のく。`,
     metrics: {
+      confidence_at_min_evidence: first.mean_confidence,
+      confidence_at_max_evidence: last.mean_confidence,
       peak_confidence: peak.mean_confidence,
       peak_at_evidence_per_element: peak.evidence_per_element,
-      final_confidence: last.mean_confidence,
       final_unresolved_per_element: last.unresolved_contradictions_per_element,
     },
     detail: { rows },

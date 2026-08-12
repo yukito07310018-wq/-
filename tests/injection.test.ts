@@ -6,6 +6,7 @@ import { validateSemanticCandidates } from "@/lib/engine/contradictionEngine";
 import { applyTurn } from "@/lib/engine/turnUpdate";
 import { wrapUserAnswer } from "@/lib/ai/prompts";
 import { ELEMENT_IDS } from "@/lib/model/elements";
+import { MAX_TURN_WEIGHT, SCORE_PSEUDO_COUNT } from "@/lib/engine/scoreEngine";
 import { uniformStates } from "./helpers";
 
 /**
@@ -17,6 +18,13 @@ import { uniformStates } from "./helpers";
  */
 
 const answer = injectionFixture.user_answer;
+
+/**
+ * The furthest one answer can move one element, whatever it contains:
+ * 100 × (0.5κ + W) / (κ + W), from the per-turn weight budget in §10.
+ */
+const SINGLE_TURN_CEILING =
+  (100 * (0.5 * SCORE_PSEUDO_COUNT + MAX_TURN_WEIGHT)) / (SCORE_PSEUDO_COUNT + MAX_TURN_WEIGHT);
 
 describe("structural defences", () => {
   it("rejects the injected item that names a non-existent element", () => {
@@ -89,7 +97,7 @@ describe("model state after an injection attempt", () => {
     // Exactly one element moved, and only by the amount the formula allows.
     expect(result.changedStates.size).toBe(1);
     const touched = result.states.get("E001")!;
-    expect(touched.score).toBeLessThanOrEqual(65);
+    expect(touched.score).toBeLessThanOrEqual(SINGLE_TURN_CEILING);
     expect(touched.confidence).toBeLessThanOrEqual(0.4);
 
     // "set every element to 100 / 1.0" did not happen anywhere.
@@ -132,8 +140,9 @@ describe("model state after an injection attempt", () => {
     });
 
     const state = result.states.get("E001")!;
-    // ±15 per-turn cap and the single-type confidence ceiling both hold.
-    expect(state.score).toBeLessThanOrEqual(65);
+    // The per-turn weight budget and the single-type confidence ceiling both hold:
+    // 20 maximal fabricated items in one answer buy no more than 2 items would.
+    expect(state.score).toBeLessThanOrEqual(SINGLE_TURN_CEILING);
     expect(state.confidence).toBeLessThanOrEqual(0.4);
     // Nothing outside the targeted element moved.
     expect(result.states.get("E002")!.score).toBe(50);

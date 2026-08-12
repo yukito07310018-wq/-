@@ -13,7 +13,7 @@ import {
   type ContradictionDraft,
   type ResolutionOutcome,
 } from "./contradictionEngine";
-import { recomputeConfidenceFromEvidence, updateConfidence } from "./confidenceEngine";
+import { computeConfidence } from "./confidenceEngine";
 import { evidenceDiversity, evidenceTypeSet } from "./diversityEngine";
 import { applyTurnLimits, computeScoreUpdates, INITIAL_CONFIDENCE, INITIAL_SCORE } from "./scoreEngine";
 import type {
@@ -101,8 +101,17 @@ export function applyTurn(input: TurnUpdateInput): TurnUpdateResult {
   const allEvidence = [...priorEvidence, ...newEvidence];
   const touched = [...new Set(newEvidence.map((e) => e.element_id))];
 
+  // Both §10 and §11 re-estimate from an element's complete evidence, so it is
+  // grouped once here rather than filtered per element per stage.
+  const evidenceByElement = new Map<string, Evidence[]>();
+  for (const e of allEvidence) {
+    const list = evidenceByElement.get(e.element_id);
+    if (list) list.push(e);
+    else evidenceByElement.set(e.element_id, [e]);
+  }
+
   // --- 2. score update (§10) --------------------------------------------------
-  const scoreUpdates = computeScoreUpdates(newEvidence, priorStates);
+  const scoreUpdates = computeScoreUpdates(newEvidence, evidenceByElement, priorStates);
   const scoreByElement = new Map(scoreUpdates.map((u) => [u.element_id, u]));
 
   // --- 3. contradictions (§13) ------------------------------------------------
@@ -152,33 +161,13 @@ export function applyTurn(input: TurnUpdateInput): TurnUpdateResult {
   for (const elementId of new Set([...touched, ...contradictionAffected])) {
     const before = states.get(elementId) ?? blankState(elementId);
     const turnEvidence = newEvidence.filter((e) => e.element_id === elementId);
-    const elementEvidence = allEvidence.filter((e) => e.element_id === elementId);
+    const elementEvidence = evidenceByElement.get(elementId) ?? [];
     const elementContradictions = contradictionsForElement(elementId, contradictions);
 
-    let confidence: number;
-    let typeSetAfter: string[];
-
-    const hadResolution = resolutions.some((r) => {
-      const c = priorContradictions.find((x) => x.contradiction_id === r.contradiction_id);
-      return c?.elements.includes(elementId) ?? false;
-    });
-
-    if (hadResolution) {
-      // A penalty was lifted; replay from evidence so the suppressed confidence
-      // comes back rather than staying permanently discounted.
-      const recomputed = recomputeConfidenceFromEvidence(elementEvidence, elementContradictions);
-      confidence = recomputed.confidence;
-      typeSetAfter = recomputed.typeSetAfter;
-    } else {
-      const updated = updateConfidence({
-        confidenceBefore: before.confidence,
-        evidenceThisTurn: turnEvidence,
-        typeSetBefore: before.evidence_type_set,
-        contradictions: elementContradictions,
-      });
-      confidence = updated.confidence;
-      typeSetAfter = updated.typeSetAfter;
-    }
+    // Both quantities are functions of the element's whole evidence, so a
+    // resolved contradiction lifts its discount simply by no longer being
+    // unresolved — there is no suppressed increment to restore.
+    const { confidence, typeSetAfter } = computeConfidence(elementEvidence, elementContradictions);
 
     const scoreUpdate = scoreByElement.get(elementId);
     const score = scoreUpdate ? scoreUpdate.scoreAfter : before.score;

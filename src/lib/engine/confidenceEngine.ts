@@ -1,17 +1,58 @@
-import { clamp } from "./scoreEngine";
+import { clamp, posteriorEstimate, PRIOR_SD } from "./scoreEngine";
 import type { Contradiction, Evidence } from "../types/diagnosis";
 
 /**
- * §11 — confidence update.
+ * §11 — confidence.
  *
  * Confidence answers "how well is this estimate supported?", never "how high is
- * the trait?". It is deliberately hard to max out: repeating the same *kind* of
- * evidence is capped (§11.2) and unresolved contradictions discount it (§11.3).
+ * the trait?".
+ *
+ * ## Why this is posterior precision now
+ *
+ * Confidence used to be an accumulator: each item added `0.18 × strength ×
+ * reliability × novelty` of asymptotic gain. That number rose with evidence, but
+ * it was never connected to how wrong the estimate actually was, so the badge on
+ * the result screen promised an accuracy it had no way to know about.
+ * `validation/` found the promise did not hold: error was lowest in the 0.2–0.4
+ * band and *rose* above it.
+ *
+ * Confidence is now read off the same posterior the score comes from. The
+ * posterior standard deviation is the estimate's own error bar, so
+ *
+ *     confidence = 1 − sd / sd_prior
+ *
+ * is 0 before any evidence (sd is exactly the prior sd) and approaches 1 as the
+ * estimate tightens. It is calibrated by construction rather than by tuning:
+ * whatever the evidence says, sd is the width of the interval it supports.
+ *
+ * Two of the old rules survive on top of it, because they encode judgements the
+ * posterior cannot make on its own:
+ *
+ *  - §11.2's diversity ceiling. The posterior treats twenty self-descriptions as
+ *    twenty observations; a person describing themselves the same way twenty
+ *    times is one observation repeated. The ceiling keeps single-type evidence
+ *    below 0.40 no matter how much of it there is.
+ *  - §11.3's contradiction discount, now bounded — see `CONTRADICTION_CAP`.
  */
 
-export const GAIN_SCALE = 0.18;
-export const REPEAT_TYPE_NOVELTY = 0.35;
+/** §11.3 — per-contradiction discount. */
 export const CONTRADICTION_PENALTY_SCALE = 0.25;
+/**
+ * At most this many unresolved contradictions may discount one element.
+ *
+ * `detectDirectionalContradictions` pairs every positive item against every
+ * negative one, so contradictions grow with the *product* of the two counts —
+ * `validation/` measured 101 per element at 60 items of evidence. Multiplying
+ * 101 discounts together drove confidence to 0.0009 and made the `conf ≥ 0.75`
+ * exit condition recede the longer the conversation ran.
+ *
+ * Capping at the three most severe keeps the signal (a contradicted element is
+ * less certain) without letting the count of pairs stand in for the strength of
+ * the conflict. The posterior already handles the rest: evidence pointing both
+ * ways lands the rate near 0.5, which is exactly where its variance is highest,
+ * so mixed evidence lowers confidence on its own.
+ */
+export const CONTRADICTION_CAP = 3;
 
 /** §11.2 — ceiling as a function of how many distinct evidence types exist. */
 export function confidenceCapByTypeCount(typeCount: number): number {
@@ -22,112 +63,63 @@ export function confidenceCapByTypeCount(typeCount: number): number {
   return 1.0;
 }
 
-export interface ConfidenceGainResult {
-  gainSum: number;
-  /** Evidence types known for this element after the turn. */
-  typeSetAfter: string[];
-}
-
 /**
- * Accumulated gain from a turn's evidence for one element.
- * A type already seen — whether in an earlier turn or earlier in this same turn
- * — only counts at REPEAT_TYPE_NOVELTY.
- */
-export function computeConfidenceGain(
-  evidence: readonly Pick<Evidence, "type" | "strength" | "reliability">[],
-  typeSetBefore: readonly string[]
-): ConfidenceGainResult {
-  const seen = new Set(typeSetBefore);
-  const typeSetAfter = [...typeSetBefore];
-  let gainSum = 0;
-
-  for (const e of evidence) {
-    const novelty = seen.has(e.type) ? REPEAT_TYPE_NOVELTY : 1.0;
-    if (!seen.has(e.type)) {
-      seen.add(e.type);
-      typeSetAfter.push(e.type);
-    }
-    gainSum += GAIN_SCALE * e.strength * e.reliability * novelty;
-  }
-
-  return { gainSum, typeSetAfter };
-}
-
-/** Asymptotic update: confidence never reaches 1 by accumulation alone. */
-export function applyConfidenceGain(confidenceBefore: number, gainSum: number): number {
-  return confidenceBefore + (1 - confidenceBefore) * gainSum;
-}
-
-/**
- * §11.3 — multiplicative discount from every unresolved contradiction the
- * element is involved in.
+ * §11.3 — discount from the most severe unresolved contradictions.
+ * Resolved ones are ignored, which is what makes a resolution restore confidence.
  */
 export function applyContradictionPenalty(
   confidence: number,
   contradictions: readonly Pick<Contradiction, "severity" | "status">[]
 ): number {
+  const worst = contradictions
+    .filter((c) => c.status === "unresolved")
+    .sort((a, b) => b.severity - a.severity)
+    .slice(0, CONTRADICTION_CAP);
+
   let result = confidence;
-  for (const c of contradictions) {
-    if (c.status !== "unresolved") continue;
-    result *= 1 - CONTRADICTION_PENALTY_SCALE * c.severity;
-  }
+  for (const c of worst) result *= 1 - CONTRADICTION_PENALTY_SCALE * c.severity;
   return result;
 }
 
-export interface ConfidenceUpdateInput {
-  confidenceBefore: number;
-  evidenceThisTurn: readonly Pick<Evidence, "type" | "strength" | "reliability">[];
-  typeSetBefore: readonly string[];
-  /** All contradictions involving this element (resolved ones are ignored). */
-  contradictions: readonly Pick<Contradiction, "severity" | "status">[];
+/** Confidence implied by an estimate's own error bar, before caps. */
+export function precisionConfidence(posteriorSd: number): number {
+  return clamp(1 - posteriorSd / PRIOR_SD, 0, 1);
 }
 
-export interface ConfidenceUpdateResult {
+export interface ConfidenceResult {
   confidence: number;
+  /** Distinct evidence types seen, in first-seen order. */
   typeSetAfter: string[];
+  /** The §11.2 ceiling that applied. */
   cap: number;
-}
-
-/** Full §11 pipeline: gain → asymptotic update → diversity cap → contradiction penalty. */
-export function updateConfidence(input: ConfidenceUpdateInput): ConfidenceUpdateResult {
-  const { gainSum, typeSetAfter } = computeConfidenceGain(input.evidenceThisTurn, input.typeSetBefore);
-  let confidence = applyConfidenceGain(input.confidenceBefore, gainSum);
-
-  const cap = confidenceCapByTypeCount(typeSetAfter.length);
-  confidence = Math.min(confidence, cap);
-  confidence = applyContradictionPenalty(confidence, input.contradictions);
-
-  return { confidence: clamp(confidence, 0, 1), typeSetAfter, cap };
+  /** Confidence before the ceiling and the contradiction discount. */
+  raw: number;
 }
 
 /**
- * Recomputes confidence for an element from the ground up.
+ * Full §11 pipeline: posterior precision → diversity ceiling → contradiction discount.
  *
- * Needed because §11.3 penalties must be *removable*: when a contradiction is
- * resolved, replaying the evidence is the only way to get back the confidence
- * it was suppressing.
- *
- * Evidence is replayed turn by turn so the result matches what the incremental
- * path would have produced — the asymptotic update is not associative across
- * batches, so replaying everything at once would drift.
+ * This is a pure function of the element's *complete* evidence, which removes a
+ * whole class of problem the incremental version had. There is no longer an
+ * increment to reverse when a contradiction resolves, and no batch-versus-
+ * step-by-step discrepancy to keep in sync — recomputation is the only path, so
+ * it cannot disagree with itself.
  */
-export function recomputeConfidenceFromEvidence(
-  evidence: readonly Pick<Evidence, "type" | "strength" | "reliability" | "turn_id">[],
+export function computeConfidence(
+  evidence: readonly Pick<Evidence, "type" | "strength" | "reliability" | "direction" | "turn_id">[],
   contradictions: readonly Pick<Contradiction, "severity" | "status">[]
-): ConfidenceUpdateResult {
-  const turns = [...new Set(evidence.map((e) => e.turn_id))].sort((a, b) => a - b);
-
-  let confidence = 0;
-  let typeSet: string[] = [];
-  for (const turn of turns) {
-    const items = evidence.filter((e) => e.turn_id === turn);
-    const { gainSum, typeSetAfter } = computeConfidenceGain(items, typeSet);
-    confidence = applyConfidenceGain(confidence, gainSum);
-    typeSet = typeSetAfter;
+): ConfidenceResult {
+  const typeSetAfter: string[] = [];
+  const seen = new Set<string>();
+  for (const e of evidence) {
+    if (seen.has(e.type)) continue;
+    seen.add(e.type);
+    typeSetAfter.push(e.type);
   }
 
-  const cap = confidenceCapByTypeCount(typeSet.length);
-  confidence = Math.min(confidence, cap);
-  confidence = applyContradictionPenalty(confidence, contradictions);
-  return { confidence: clamp(confidence, 0, 1), typeSetAfter: typeSet, cap };
+  const raw = precisionConfidence(posteriorEstimate(evidence).posteriorSd);
+  const cap = confidenceCapByTypeCount(typeSetAfter.length);
+  const confidence = applyContradictionPenalty(Math.min(raw, cap), contradictions);
+
+  return { confidence: clamp(confidence, 0, 1), typeSetAfter, cap, raw };
 }
