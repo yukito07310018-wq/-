@@ -172,6 +172,11 @@ export async function loadEvidence(sessionId: string): Promise<Evidence[]> {
   }));
 }
 
+/** Row count for one session — diagnostics only (§ debug instrumentation). */
+export async function countEvidence(sessionId: string): Promise<number> {
+  return prisma.evidence.count({ where: { sessionId } });
+}
+
 export async function loadContradictions(sessionId: string): Promise<Contradiction[]> {
   const rows = await prisma.contradiction.findMany({
     where: { sessionId },

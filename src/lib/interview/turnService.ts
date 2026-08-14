@@ -8,6 +8,7 @@ import { selectQuestion } from "../engine/questionSelector";
 import { evaluateTermination, MAX_TURNS } from "../engine/terminationEngine";
 import { applyTurn } from "../engine/turnUpdate";
 import { checkDistress, buildCrisisReply, DISTRESS_BANNED_PROBE_KINDS } from "../safety/distressCheck";
+import { debugLog, diagnosisDebugEnabled } from "../debug/diagnosisDebug";
 import * as repo from "../db/repository";
 import type { AskedQuestion, QuestionCandidate } from "../types/diagnosis";
 
@@ -89,6 +90,11 @@ export async function processTurn(sessionId: string, message: string): Promise<T
   } catch (error) {
     // §36 failure handling: a failed extraction must not stop the conversation.
     console.error("[turnService] analyst call failed, continuing with zero evidence:", error);
+    debugLog("turnService", "analyst threw — this turn contributes no evidence", {
+      session_id: sessionId,
+      turn,
+      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+    });
     analyst = { evidence: [], contradictionCandidates: [], rejectedCount: 0, repaired: false };
   }
 
@@ -104,6 +110,18 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     makeContradictionId: (i) => `cx-${turn}-${i}`,
   });
 
+  debugLog("turnService", "turn model update", {
+    session_id: sessionId,
+    turn,
+    drafts_from_analyst: analyst.evidence.length,
+    dropped_by_turn_limits: update.droppedByLimits,
+    evidence_to_persist: update.newEvidence.length,
+    prior_evidence_rows: priorEvidence.length,
+    changed_elements: update.changedStates.size,
+    mean_confidence: Number(update.meanConfidence.toFixed(4)),
+    coverage: Number(update.coverage.toFixed(4)),
+  });
+
   await repo.persistTurn({
     sessionId,
     turn,
@@ -113,6 +131,16 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     resolutions: update.resolutions,
     axes: update.axes,
   });
+
+  if (diagnosisDebugEnabled()) {
+    // Read back from the DB under the same session id the result page will use,
+    // so a write/read session mismatch shows up here rather than on the dashboard.
+    debugLog("turnService", "persisted", {
+      session_id: sessionId,
+      turn,
+      evidence_rows_now: await repo.countEvidence(sessionId),
+    });
+  }
 
   const progress = computeProgress({
     turn,

@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { z } from "zod";
+import { debugLog, debugRaw } from "../debug/diagnosisDebug";
 
 /**
  * Anthropic wrapper: timeout, retry, JSON extraction and schema repair (§36/§39).
@@ -130,7 +131,19 @@ export async function callModel(options: RawCallOptions): Promise<string> {
         .filter((block): block is Anthropic.TextBlock => block.type === "text")
         .map((block) => block.text)
         .join("");
-      return (options.prefill ?? "") + text;
+      const raw = (options.prefill ?? "") + text;
+
+      // (1) the raw string as it came back, plus why the model stopped.
+      // stop_reason "max_tokens" means the JSON below is truncated, not invalid.
+      debugLog(options.label, "response meta", {
+        stop_reason: response.stop_reason,
+        output_tokens: response.usage.output_tokens,
+        max_tokens: options.maxTokens,
+        prefill: options.prefill ?? null,
+      });
+      debugRaw(options.label, "raw response", raw);
+
+      return raw;
     } catch (error) {
       lastError = error;
       const retryable = isRetryableStatus(error) || controller.signal.aborted;
@@ -166,6 +179,11 @@ export function extractJson(raw: string): string {
 
 export interface StructuredCallOptions<T> extends RawCallOptions {
   schema: z.ZodType<T>;
+  /**
+   * Diagnostic hook: receives the JSON.parse result *before* schema validation,
+   * so a caller can report what the model actually sent when validation fails.
+   */
+  onRawParsed?: (value: unknown) => void;
 }
 
 /**
@@ -182,17 +200,36 @@ export async function callModelStructured<T>(options: StructuredCallOptions<T>):
       user: feedback ? `${options.user}\n\n${feedback}` : options.user,
     });
 
+    const extracted = extractJson(raw);
     let parsed: unknown;
     try {
-      parsed = JSON.parse(extractJson(raw));
-    } catch {
+      parsed = JSON.parse(extracted);
+    } catch (error) {
+      debugLog(options.label, `JSON.parse failed on attempt ${attempt + 1}`, {
+        error: error instanceof Error ? error.message : String(error),
+        extracted_chars: extracted.length,
+        extracted_tail: extracted.slice(-120),
+      });
       feedback = `前回の出力は JSON として解析できませんでした。マークダウンや説明文を含めず、JSON オブジェクトのみを出力してください。`;
       console.warn(`[ai] ${options.label}: JSON parse failed (attempt ${attempt + 1})`);
       if (attempt < MAX_REPAIR_ATTEMPTS) await sleep(1000 * 2 ** attempt);
       continue;
     }
 
+    options.onRawParsed?.(parsed);
+
+    // (2) safeParse outcome: success, or every issue with its path and message.
     const result = options.schema.safeParse(parsed);
+    debugLog(options.label, `safeParse attempt ${attempt + 1}`, {
+      success: result.success,
+      issues: result.success
+        ? []
+        : result.error.issues.map((i) => ({
+            path: i.path.join(".") || "(root)",
+            code: i.code,
+            message: i.message,
+          })),
+    });
     if (result.success) return result.data;
 
     const issues = result.error.issues
