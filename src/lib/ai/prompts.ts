@@ -1,5 +1,5 @@
-import { axisNameOf } from "../model/axes";
-import { ELEMENTS, getElement, neighbourhoodOf } from "../model/elements";
+import { AXES, axisNameOf } from "../model/axes";
+import { getElement, neighbourhoodOf } from "../model/elements";
 import { stripUserAnswerTags } from "../validation/userText";
 import type {
   AskedQuestion,
@@ -143,6 +143,57 @@ export interface ProfileContext {
   states: ReadonlyMap<string, ElementState>;
   contradictions: readonly Contradiction[];
   recentlyUpdated: readonly string[];
+  /** Rotates tie-breaks so exploration sweeps all 100 elements, not the first 20. */
+  turn: number;
+}
+
+/** How many of the 35 slots go to the least-measured elements. */
+export const LEAST_MEASURED_SLOTS = 20;
+const ELEMENTS_PER_AXIS = 10;
+
+/**
+ * The least-measured elements, taken evenly from all ten axes.
+ *
+ * Almost every comparison here is a tie: on turn 1 all 100 elements sit at
+ * confidence 0, and most still do at turn 20. Resolving ties by element id
+ * returned E001-E020 every single turn — which is AX01 and AX02 and nothing
+ * else, so eight of the ten axes were never offered to either model and their
+ * coverage could not leave zero. Two things fix that: elements are drawn
+ * per-axis rather than globally, and ties rotate with the turn so the whole of
+ * each axis is swept rather than its first two members.
+ */
+function leastMeasured(ctx: ProfileContext): string[] {
+  const rankedPerAxis = AXES.map((axis) => {
+    const size = axis.element_ids.length;
+    return axis.element_ids
+      .map((id, index) => {
+        const state = ctx.states.get(id);
+        return {
+          id,
+          confidence: state?.confidence ?? 0,
+          evidenceCount: state?.evidence_count ?? 0,
+          rotation: (((index - ctx.turn) % size) + size) % size,
+        };
+      })
+      .sort(
+        (a, b) =>
+          a.confidence - b.confidence ||
+          a.evidenceCount - b.evidenceCount ||
+          a.rotation - b.rotation
+      )
+      .map((e) => e.id);
+  });
+
+  // Breadth before depth: one element from every axis before a second from any,
+  // so a single axis cannot consume the whole catalogue.
+  const out: string[] = [];
+  for (let depth = 0; out.length < LEAST_MEASURED_SLOTS && depth < ELEMENTS_PER_AXIS; depth++) {
+    for (let i = 0; i < rankedPerAxis.length && out.length < LEAST_MEASURED_SLOTS; i++) {
+      const id = rankedPerAxis[(i + ctx.turn) % rankedPerAxis.length][depth];
+      if (id) out.push(id);
+    }
+  }
+  return out;
 }
 
 /**
@@ -158,10 +209,7 @@ export function selectContextElements(ctx: ProfileContext): string[] {
     }
   };
 
-  const byConfidence = [...ELEMENTS]
-    .map((e) => ({ id: e.element_id, confidence: ctx.states.get(e.element_id)?.confidence ?? 0 }))
-    .sort((a, b) => a.confidence - b.confidence || a.id.localeCompare(b.id));
-  for (const { id } of byConfidence.slice(0, 20)) add(id);
+  for (const id of leastMeasured(ctx)) add(id);
 
   const neighbours: string[] = [];
   for (const id of ctx.recentlyUpdated) {

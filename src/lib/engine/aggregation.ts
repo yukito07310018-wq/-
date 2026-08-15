@@ -37,6 +37,18 @@ export function axisScore(
   return clamp(numerator / denominator, 0, 100);
 }
 
+/**
+ * §14 — how well supported the axis estimate is.
+ *
+ * Only elements that carry evidence are in the denominator. Dividing by all ten
+ * conflated two different questions: an element nobody was asked about is not
+ * weak evidence, it is absent evidence, and averaging its zero in made
+ * confidence a disguised coverage measure. It also made the number unreachable
+ * — a turn touches at most 6 of 100 elements, so the diluted mean sat far below
+ * the 0.4 display threshold no matter how good the evidence was.
+ *
+ * How much was measured at all is what `axisCoverage` reports, separately.
+ */
 export function axisConfidence(
   elementIds: readonly string[],
   states: ReadonlyMap<string, ElementState>
@@ -44,8 +56,10 @@ export function axisConfidence(
   let weighted = 0;
   let weightSum = 0;
   for (const id of elementIds) {
+    const { confidence, evidenceCount } = stateOf(states, id);
+    if (evidenceCount < 1) continue;
     const w = getElementWeight(id);
-    weighted += stateOf(states, id).confidence * w;
+    weighted += confidence * w;
     weightSum += w;
   }
   return weightSum === 0 ? 0 : clamp(weighted / weightSum, 0, 1);
@@ -76,14 +90,24 @@ export function overallCoverage(axes: readonly AxisAggregate[]): number {
   return axes.reduce((sum, a) => sum + a.coverage, 0) / axes.length;
 }
 
-/** §14.4 — weighted mean confidence across all 100 elements. */
+/**
+ * §14.4 — weighted mean confidence over the elements that were actually measured.
+ *
+ * Same denominator rule as `axisConfidence`, and for the same reason: this feeds
+ * the §33 quality gate, which pairs it with `overallCoverage ≥ 0.7`. Confidence
+ * answers "is what we measured well supported?" and coverage answers "how much
+ * did we measure?" — with the old denominator both questions were answered by
+ * this one number, and neither was answered well.
+ */
 export function diagnosisConfidence(states: ReadonlyMap<string, ElementState>): number {
   let weighted = 0;
   let weightSum = 0;
   for (const axis of AXES) {
     for (const id of axis.element_ids) {
+      const { confidence, evidenceCount } = stateOf(states, id);
+      if (evidenceCount < 1) continue;
       const w = getElementWeight(id);
-      weighted += stateOf(states, id).confidence * w;
+      weighted += confidence * w;
       weightSum += w;
     }
   }
