@@ -103,10 +103,16 @@ describe("model state after an injection attempt", () => {
       }
     }
 
+    // Axis confidence now reports the one element that was measured rather than
+    // diluting it across ten, so containment is proved by the ceiling that
+    // actually binds — a single evidence type caps at 0.4 — and by coverage,
+    // which is what says how little of the axis this represents.
     for (const axis of result.axes) {
       expect(axis.score).toBeLessThan(60);
-      expect(axis.confidence).toBeLessThan(0.1);
+      expect(axis.confidence).toBeLessThanOrEqual(0.4);
+      expect(axis.coverage).toBeLessThanOrEqual(0.1);
     }
+    expect(result.axes.filter((a) => a.confidence > 0)).toHaveLength(1);
   });
 
   it("caps damage even if a fabricated item somehow passed verification", () => {

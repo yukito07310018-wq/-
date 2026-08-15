@@ -71,9 +71,45 @@ describe("axisScore", () => {
 });
 
 describe("axisConfidence / coverage", () => {
-  it("averages confidence across the axis", () => {
-    const states = stateMap(AX01.map((id) => makeState({ element_id: id, confidence: 0.6 })));
+  it("averages confidence across the measured elements", () => {
+    const states = stateMap(
+      AX01.map((id) => makeState({ element_id: id, confidence: 0.6, evidence_count: 1 }))
+    );
     expect(axisConfidence(AX01, states)).toBeCloseTo(0.6, 10);
+  });
+
+  it("leaves unmeasured elements out of the denominator", () => {
+    // Three elements measured at 0.6, seven never asked about. The answer is
+    // "what we measured, we know to 0.6", not "0.18" — how little was measured
+    // is coverage's job to say.
+    const states = stateMap([
+      ...AX01.slice(0, 3).map((id) =>
+        makeState({ element_id: id, confidence: 0.6, evidence_count: 2 })
+      ),
+      ...AX01.slice(3).map((id) => makeState({ element_id: id, confidence: 0 })),
+    ]);
+    expect(axisConfidence(AX01, states)).toBeCloseTo(0.6, 10);
+    expect(axisCoverage(AX01, states)).toBeCloseTo(0.3, 10);
+  });
+
+  it("is 0 while nothing in the axis has been measured", () => {
+    const states = stateMap(AX01.map((id) => makeState({ element_id: id })));
+    expect(axisConfidence(AX01, states)).toBe(0);
+  });
+
+  it("does not let an unmeasured element dilute a measured one", () => {
+    const oneMeasured = stateMap([
+      makeState({ element_id: AX01[0], confidence: 0.8, evidence_count: 3 }),
+      ...AX01.slice(1).map((id) => makeState({ element_id: id })),
+    ]);
+    const allMeasured = stateMap(
+      AX01.map((id) => makeState({ element_id: id, confidence: 0.8, evidence_count: 3 }))
+    );
+    // Coverage separates these two situations; confidence no longer conflates them.
+    expect(axisConfidence(AX01, oneMeasured)).toBeCloseTo(0.8, 10);
+    expect(axisConfidence(AX01, allMeasured)).toBeCloseTo(0.8, 10);
+    expect(axisCoverage(AX01, oneMeasured)).toBeCloseTo(0.1, 10);
+    expect(axisCoverage(AX01, allMeasured)).toBeCloseTo(1, 10);
   });
 
   it("counts elements with at least one piece of evidence", () => {
@@ -91,12 +127,31 @@ describe("axisConfidence / coverage", () => {
 });
 
 describe("diagnosisConfidence", () => {
-  it("spans all 100 elements", () => {
-    const half = stateMap(
-      ELEMENT_IDS.map((id, i) => makeState({ element_id: id, confidence: i < 50 ? 1 : 0 }))
+  it("spans every measured element, whichever axis it sits in", () => {
+    const mixed = stateMap(
+      ELEMENT_IDS.map((id, i) =>
+        makeState({ element_id: id, confidence: i < 50 ? 1 : 0.2, evidence_count: 1 })
+      )
     );
-    const value = diagnosisConfidence(half);
-    expect(value).toBeGreaterThan(0.4);
-    expect(value).toBeLessThan(0.6);
+    const value = diagnosisConfidence(mixed);
+    expect(value).toBeGreaterThan(0.5);
+    expect(value).toBeLessThan(0.7);
+  });
+
+  it("uses the same denominator rule as axisConfidence", () => {
+    // Fifty elements measured at 1.0, fifty never touched: 1.0, not 0.5. The
+    // §33 gate pairs this with overallCoverage ≥ 0.7, which is what notices
+    // that half the model is missing.
+    const half = stateMap(
+      ELEMENT_IDS.map((id, i) =>
+        makeState({ element_id: id, confidence: i < 50 ? 1 : 0, evidence_count: i < 50 ? 1 : 0 })
+      )
+    );
+    expect(diagnosisConfidence(half)).toBeCloseTo(1, 10);
+    expect(overallCoverage(aggregateAxes(half))).toBeCloseTo(0.5, 10);
+  });
+
+  it("is 0 before anything is measured", () => {
+    expect(diagnosisConfidence(uniformStates(ELEMENT_IDS))).toBe(0);
   });
 });

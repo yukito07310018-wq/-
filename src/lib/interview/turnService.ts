@@ -81,6 +81,7 @@ export async function processTurn(sessionId: string, message: string): Promise<T
         states,
         contradictions: priorContradictions,
         recentlyUpdated,
+        turn,
       }),
       conversation,
       recentEvidence: priorEvidence,
@@ -89,7 +90,13 @@ export async function processTurn(sessionId: string, message: string): Promise<T
   } catch (error) {
     // §36 failure handling: a failed extraction must not stop the conversation.
     console.error("[turnService] analyst call failed, continuing with zero evidence:", error);
-    analyst = { evidence: [], contradictionCandidates: [], rejectedCount: 0, repaired: false };
+    analyst = {
+      evidence: [],
+      contradictionCandidates: [],
+      rejectedCount: 0,
+      duplicateCount: 0,
+      repaired: false,
+    };
   }
 
   // --- deterministic model update (§22-4〜9) --------------------------------
@@ -209,6 +216,7 @@ async function chooseNextQuestion(
             states: input.states,
             contradictions: input.contradictions,
             recentlyUpdated,
+            turn: input.turn,
           }),
           states: input.states,
           conversation: input.conversation,
