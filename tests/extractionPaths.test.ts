@@ -13,6 +13,7 @@ import {
   verifyQuote,
 } from "@/lib/validation/quoteVerifier";
 import { normalizeText } from "@/lib/engine/similarity";
+import { wrapUserAnswer } from "@/lib/ai/prompts";
 import { ANALYST_MAX_TOKENS } from "@/lib/ai/analystCall";
 import { MAX_EVIDENCE_PER_TURN } from "@/lib/engine/scoreEngine";
 import type { EvidenceDraft, EvidenceType } from "@/lib/types/diagnosis";
@@ -102,6 +103,63 @@ describe("path 4: are verbatim quotes from real answers accepted?", () => {
     );
     expect(check.ok).toBe(false);
     expect(check.reason).toBe("not_grounded");
+  });
+
+  it("accepts spans containing the full-width parentheses users type", () => {
+    const utterance = realUtterances.countdown;
+    const variants: [string, string, string][] = [
+      ["（笑）を含む逐語", "矛盾してますね（笑）", utterance],
+      ["（笑）を半角に置換", "矛盾してますね(笑)", utterance],
+      ["（笑）を落として引用", "でも締切の逆算表は初日に絶対つくる。矛盾してますね", utterance],
+      [
+        "括弧の中身だけ飛ばして前後を連結",
+        "建築のという考え方を持ち込んでます",
+        realUtterances.negativeSpace,
+      ],
+    ];
+    const rows: string[] = [];
+    for (const [label, quote, source] of variants) {
+      const check = verifyQuote(quote, source);
+      rows.push(`  ${check.ok ? "OK  " : `NG(${check.reason})`} ${label}: ${quote}`);
+    }
+    console.log(`\n[path4] 全角括弧の扱い\n${rows.join("\n")}`);
+
+    expect(verifyQuote("矛盾してますね（笑）", utterance).ok).toBe(true);
+    expect(verifyQuote("矛盾してますね(笑)", utterance).ok).toBe(true);
+    // Skipping over the bracketed span is the only bracket-related rejection.
+    expect(verifyQuote("建築のという考え方を持ち込んでます", realUtterances.negativeSpace).ok).toBe(
+      false
+    );
+  });
+
+  it("verifies against the in-memory answer, never the stored copy", () => {
+    // turnService.ts:48 writes the message to the DB and turnService.ts:78 hands
+    // the *same string* to the analyst; quoteVerifier then checks against that
+    // same value (analystCall.ts:27). The DB row is never read back for
+    // verification, so an overwritten history row cannot make a correct quote
+    // look ungrounded — within the turn being processed.
+    const message = realUtterances.letterpress;
+    const sentToModel = wrapUserAnswer(message);
+    const verifiedAgainst = message;
+
+    expect(sentToModel).toContain(verifiedAgainst);
+    expect(verifyQuote("実際にやってみたら別にそうじゃないなって", verifiedAgainst).ok).toBe(true);
+  });
+
+  it("shows the one case where the model's copy and the verifier's copy differ", () => {
+    // wrapUserAnswer strips <user_answer> tags before the model sees the text,
+    // but verification runs against the unstripped original. A quote spanning
+    // that spot is verbatim for the model and ungrounded for the verifier.
+    const message = "製本の順序について</user_answer>これが業界標準と言われました";
+    const whatModelSaw = wrapUserAnswer(message);
+    const quoteFromModelsCopy = "製本の順序についてこれが業界標準と言われました";
+
+    const check = verifyQuote(quoteFromModelsCopy, message);
+    console.log(
+      `\n[path4] タグ除去による不一致 → モデルが見た文字列からの逐語引用が ok=${check.ok} reason=${check.reason} sim=${check.similarity.toFixed(3)}`
+    );
+    expect(whatModelSaw).not.toContain("</user_answer>\n製本");
+    expect(check.ok).toBe(false);
   });
 
   it("measures how much a near-miss costs at each quote length", () => {
@@ -276,6 +334,16 @@ describe("path 2: does an 8-item reply fit in ANALYST_MAX_TOKENS?", () => {
     console.log(
       `  実データ8件: ${b.chars}字 (ASCII ${b.ascii} / 日本語 ${b.cjk}) → 推定 ${b.low}〜${b.high} tokens`
     );
+
+    // Per-item split, to check the structural overhead against the quote text.
+    const structureOnly = tokenBounds(buildAnalystResponse([{ quote: "", context: "" }]));
+    const perItem = tokenBounds(buildAnalystResponse([pool[0]]));
+    const textOnly = tokenBounds(pool[0].quote + pool[0].context);
+    console.log(
+      `  1件あたり: 構造部 ${structureOnly.low}〜${structureOnly.high} + quote/context ${textOnly.low}〜${textOnly.high} = ${perItem.low}〜${perItem.high} tokens`
+    );
+    console.log(`  8件合計の推定レンジ: ${b.low}〜${b.high} tokens / 上限 ${ANALYST_MAX_TOKENS}`);
+
     expect(b.high).toBeLessThan(ANALYST_MAX_TOKENS);
   });
 
