@@ -1,5 +1,6 @@
 import { axisNameOf } from "../model/axes";
 import { ELEMENTS, getElement, neighbourhoodOf } from "../model/elements";
+import { stripUserAnswerTags } from "../validation/userText";
 import type {
   AskedQuestion,
   Contradiction,
@@ -37,7 +38,11 @@ The application computes all numeric state deterministically.
 
 Every extracted evidence item must quote the user's actual words verbatim.
 Do not fabricate, paraphrase, or reconstruct quotations.
-A quote must be a contiguous span copied from the user's answer, 10-120 characters long.
+A quote must be a contiguous span, at most 120 characters, copied from a USER
+line in the conversation shown to you or from the answer in <user_answer>.
+Never quote an AI line: those are your own questions, not evidence about the user.
+Quote only the part that carries the meaning. A short span is preferred when it
+is the whole of what the user said — do not pad a quote out to make it longer.
 If no meaningful evidence is present in the answer, return an empty array.
 Returning fewer, well-grounded items is strictly better than many weak ones.
 Extract at most 8 evidence items covering at most 6 elements.
@@ -131,8 +136,7 @@ Output valid JSON only: {"level":"none","reason":"..."}`;
 /** Wraps untrusted user text so the model can tell data from instructions. */
 export function wrapUserAnswer(text: string): string {
   // Neutralise attempts to close the tag early and continue as "system" text.
-  const sanitized = text.replace(/<\/?user_answer>/gi, "");
-  return `<user_answer>\n${sanitized}\n</user_answer>`;
+  return `<user_answer>\n${stripUserAnswerTags(text)}\n</user_answer>`;
 }
 
 export interface ProfileContext {
@@ -187,11 +191,38 @@ export function renderElementCatalogue(elementIds: readonly string[]): string {
     .join("\n");
 }
 
+/**
+ * The slice of history every prompt shows the model (§37).
+ *
+ * Exported because quote verification has to use the same slice: a quote is
+ * grounded when it comes from something the model was actually shown, so the
+ * window that decides what is visible and the window that decides what is
+ * checkable must be one function, not two constants that can drift apart.
+ */
+export function recentConversationSlice(
+  messages: readonly ConversationMessage[]
+): readonly ConversationMessage[] {
+  return messages.slice(-RECENT_TURNS * 2);
+}
+
+/** The user utterances inside that slice — the corpus a quote may come from. */
+export function visibleUserUtterances(messages: readonly ConversationMessage[]): string[] {
+  return recentConversationSlice(messages)
+    .filter((m) => m.role === "user")
+    .map((m) => stripUserAnswerTags(m.content));
+}
+
 export function renderRecentConversation(messages: readonly ConversationMessage[]): string {
-  const recent = messages.slice(-RECENT_TURNS * 2);
+  const recent = recentConversationSlice(messages);
   if (recent.length === 0) return "(まだ会話はありません)";
   return recent
-    .map((m) => `${m.role === "user" ? "USER" : "AI"} (turn ${m.turnIndex}): ${m.content}`)
+    .map(
+      (m) =>
+        // Past turns are replayed outside <user_answer>, so the delimiter has to
+        // be stripped here too — otherwise an earlier answer can forge a
+        // boundary in this section (§34.3).
+        `${m.role === "user" ? "USER" : "AI"} (turn ${m.turnIndex}): ${stripUserAnswerTags(m.content)}`
+    )
     .join("\n");
 }
 
@@ -255,6 +286,8 @@ export function buildAnalystUserPrompt(input: AnalystPromptInput): string {
     wrapUserAnswer(input.answer),
     "",
     "上記の回答から証拠を抽出し、JSON のみを出力してください。",
+    "quote は上の <user_answer> 内、または「直近の会話」の USER 行から、そのまま切り出すこと。",
+    "AI 行から引用してはならない。",
   ].join("\n");
 }
 

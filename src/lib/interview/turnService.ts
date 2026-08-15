@@ -89,7 +89,13 @@ export async function processTurn(sessionId: string, message: string): Promise<T
   } catch (error) {
     // §36 failure handling: a failed extraction must not stop the conversation.
     console.error("[turnService] analyst call failed, continuing with zero evidence:", error);
-    analyst = { evidence: [], contradictionCandidates: [], rejectedCount: 0, repaired: false };
+    analyst = {
+      evidence: [],
+      contradictionCandidates: [],
+      rejectedCount: 0,
+      duplicateCount: 0,
+      repaired: false,
+    };
   }
 
   // --- deterministic model update (§22-4〜9) --------------------------------
