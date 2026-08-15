@@ -2,7 +2,7 @@
   "questions": [
     {
       "question_id": "FB01",
-      "text": "最近、自分でも意外だったと思う選択をしたのはどんな場面でしたか。そのとき何を考えていたか教えてください。",
+      "text": "最近、楽しかったことは何ですか。",
       "target_elements": ["E051", "E031", "E081"],
       "probe_kind": "decision",
       "expected_yield": 0.7,
@@ -10,7 +10,7 @@
     },
     {
       "question_id": "FB02",
-      "text": "周りの人と自分とで、見え方が違っていたと感じた出来事はありますか。どこが違ったのかも教えてください。",
+      "text": "最近、イラッとしたことは何ですか。",
       "target_elements": ["E001", "E007", "E044"],
       "probe_kind": "experience",
       "expected_yield": 0.7,
@@ -26,7 +26,7 @@
     },
     {
       "question_id": "FB04",
-      "text": "誰にも頼まれていないのに、自分から時間を使って続けていることはありますか。何が続けさせているのでしょう。",
+      "text": "最近、なんとなく気になって頭に残っていることはありますか。",
       "target_elements": ["E021", "E063", "E065"],
       "probe_kind": "behavior",
       "expected_yield": 0.7,
@@ -58,7 +58,7 @@
     },
     {
       "question_id": "FB08",
-      "text": "時間もお金も制約がなかったとしたら、まず何に取りかかりますか。なぜそれを選ぶのかも教えてください。",
+      "text": "最近、これは違うな、と感じたことはありますか。",
       "target_elements": ["E035", "E037", "E011"],
       "probe_kind": "hypothetical",
       "expected_yield": 0.6,
