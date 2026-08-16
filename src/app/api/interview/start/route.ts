@@ -8,8 +8,10 @@ export const dynamic = "force-dynamic";
 
 /**
  * §24 — starts a session.
- * Turn 0 has no evidence, so QValue selection would be meaningless; the opening
- * question comes from the pre-authored broad set instead.
+ *
+ * The first question is the first of the four pre-authored openers: thin, broad,
+ * and deliberately not about anything, so the subject of the interview is picked
+ * by the person being interviewed rather than by us.
  */
 export async function POST(): Promise<NextResponse> {
   try {
@@ -20,8 +22,12 @@ export async function POST(): Promise<NextResponse> {
       );
     }
 
-    const sessionId = await repo.createSession();
     const opening = pickOpeningQuestion();
+    if (!opening) {
+      return apiError("INTERNAL", "入口となる質問が設定されていません。");
+    }
+
+    const sessionId = await repo.createSession();
 
     await repo.saveConversationTurn(sessionId, 0, "assistant", opening.text);
     await repo.saveAskedQuestion(sessionId, {
@@ -29,7 +35,7 @@ export async function POST(): Promise<NextResponse> {
       text: opening.text,
       target_elements: opening.target_elements,
       probe_kind: opening.probe_kind,
-      q_value: 0,
+      mode: "opening",
     });
 
     return NextResponse.json({

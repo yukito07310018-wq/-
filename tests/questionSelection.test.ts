@@ -1,197 +1,159 @@
 import { describe, expect, it } from "vitest";
 import questionFixture from "./fixtures/questionCandidates.json";
 import { QuestionGenerationSchema } from "@/lib/validation/schemas";
+import { selectQuestion } from "@/lib/engine/questionSelector";
+import { nextMode, topicRun, TOPIC_TURNS } from "@/lib/engine/questionFlow";
 import {
-  contradictionTerm,
-  diversityTerm,
-  evidenceImportanceTerm,
-  informationGainTerm,
-  scoreCandidate,
-  selectQuestion,
-  uncertaintyTerm,
-} from "@/lib/engine/questionSelector";
-import { pickFallbackQuestion, pickOpeningQuestion } from "@/lib/engine/fallbackQuestions";
-import { ELEMENT_IDS } from "@/lib/model/elements";
-import { makeState, uniformStates } from "./helpers";
-import type { AskedQuestion, Contradiction, QuestionCandidate } from "@/lib/types/diagnosis";
+  OPENING_QUESTIONS,
+  pickFallbackQuestion,
+  pickOpeningQuestion,
+} from "@/lib/engine/fallbackQuestions";
+import { asked, askedQuestion, candidate } from "./helpers";
+import type { AskedQuestion } from "@/lib/types/diagnosis";
 
-/** §17 — the selector, not the LLM, decides what gets asked. */
-
-function candidate(overrides: Partial<QuestionCandidate> & { question_id: string }): QuestionCandidate {
-  return {
-    text: `質問${overrides.question_id}：具体的な経験を教えてください`,
-    target_elements: ["E001"],
-    probe_kind: "experience",
-    expected_yield: 0.7,
-    rationale: "",
-    ...overrides,
-  };
-}
-
-const baseStates = uniformStates(ELEMENT_IDS);
+/**
+ * How the interview decides what to ask.
+ *
+ * Everything the old QValue weighed — which elements looked least measured,
+ * which axis had not been visited, how unlike the last three questions this one
+ * was — is gone. What is left is a topic that gets four turns and a rule against
+ * asking the same thing twice.
+ */
 
 describe("Call B fixture", () => {
-  it("passes schema validation and yields 3 candidates", () => {
+  it("passes schema validation and carries no element targets", () => {
     const parsed = QuestionGenerationSchema.parse(questionFixture);
     expect(parsed.questions).toHaveLength(3);
+    expect(parsed.answer_signal).toBe("normal");
+    for (const q of parsed.questions) {
+      expect(q).not.toHaveProperty("target_elements");
+    }
+  });
+
+  it("defaults answer_signal when the model omits it", () => {
+    const withoutSignal: Record<string, unknown> = { ...questionFixture };
+    delete withoutSignal.answer_signal;
+    expect(QuestionGenerationSchema.parse(withoutSignal).answer_signal).toBe("normal");
   });
 });
 
-describe("individual terms", () => {
-  it("U is highest for unmeasured elements", () => {
-    const states = new Map(baseStates);
-    states.set("E002", makeState({ element_id: "E002", confidence: 0.9 }));
-    const ctx = { states, contradictions: [], askedQuestions: [] };
-
-    expect(uncertaintyTerm(["E001"], ctx)).toBeCloseTo(1, 10);
-    expect(uncertaintyTerm(["E002"], ctx)).toBeCloseTo(0.1, 10);
+describe("topicRun", () => {
+  it("counts the opener plus everything deepened on top of it", () => {
+    expect(topicRun(asked(["opening", "deepen", "deepen"]))).toBe(3);
   });
 
-  it("I scales with expected yield", () => {
-    const ctx = { states: baseStates, contradictions: [], askedQuestions: [] };
-    expect(informationGainTerm(["E001"], 0.9, ctx)).toBeGreaterThan(
-      informationGainTerm(["E001"], 0.2, ctx)
-    );
+  it("restarts at the switch", () => {
+    expect(topicRun(asked(["opening", "deepen", "deepen", "switch", "deepen"]))).toBe(2);
   });
 
-  it("C is the severity of the worst relevant unresolved contradiction", () => {
-    const contradictions: Contradiction[] = [
-      {
-        contradiction_id: "c1",
-        elements: ["E001"],
-        evidence_a: "a",
-        evidence_b: "b",
-        severity: 0.9,
-        status: "unresolved",
-        detected_turn: 2,
-      },
-      {
-        contradiction_id: "c2",
-        elements: ["E002"],
-        evidence_a: "c",
-        evidence_b: "d",
-        severity: 0.6,
-        status: "resolved",
-        detected_turn: 3,
-      },
-    ];
-    const ctx = { states: baseStates, contradictions, askedQuestions: [] };
-
-    expect(contradictionTerm(["E001"], ctx)).toBeCloseTo(0.9, 10);
-    expect(contradictionTerm(["E002"], ctx)).toBe(0); // resolved does not count
-    expect(contradictionTerm(["E003"], ctx)).toBe(0);
-  });
-
-  it("D penalises repeating the recent axis and probe kind", () => {
-    const asked: AskedQuestion[] = [1, 2, 3].map((turn) => ({
-      turn,
-      text: `過去の質問${turn}`,
-      target_elements: ["E001"], // AX01
-      probe_kind: "experience",
-      q_value: 0.5,
-    }));
-    const ctx = { states: baseStates, contradictions: [], askedQuestions: asked };
-
-    const repeat = diversityTerm(candidate({ question_id: "r" }), ctx);
-    const fresh = diversityTerm(
-      candidate({ question_id: "f", target_elements: ["E091"], probe_kind: "future" }),
-      ctx
-    );
-
-    expect(repeat).toBeCloseTo(0, 10);
-    expect(fresh).toBeCloseTo(1, 10);
-  });
-
-  it("E favours elements with no evidence at all", () => {
-    const states = new Map(baseStates);
-    states.set("E002", makeState({ element_id: "E002", evidence_count: 4 }));
-    const ctx = { states, contradictions: [], askedQuestions: [] };
-
-    expect(evidenceImportanceTerm(["E001"], ctx)).toBeGreaterThan(
-      evidenceImportanceTerm(["E002"], ctx)
-    );
+  it("is 0 before anything has been asked", () => {
+    expect(topicRun([])).toBe(0);
   });
 });
 
-describe("selectQuestion", () => {
-  it("prefers the candidate aimed at the least certain elements", () => {
-    const states = new Map(baseStates);
-    states.set("E002", makeState({ element_id: "E002", confidence: 0.95, evidence_count: 6 }));
-
-    const result = selectQuestion(
-      [
-        candidate({ question_id: "known", target_elements: ["E002"] }),
-        candidate({ question_id: "unknown", target_elements: ["E001"] }),
-      ],
-      { states, contradictions: [], askedQuestions: [] }
-    );
-
-    expect(result.selected?.question_id).toBe("unknown");
+describe("nextMode", () => {
+  it("opens when nothing has been asked", () => {
+    expect(nextMode([])).toBe("opening");
   });
 
-  it("prefers a candidate that addresses an unresolved contradiction", () => {
-    // Both targets are equally unmeasured; only the contradiction differs.
-    const contradictions: Contradiction[] = [
-      {
-        contradiction_id: "c1",
-        elements: ["E003"],
-        evidence_a: "a",
-        evidence_b: "b",
-        severity: 0.9,
-        status: "unresolved",
-        detected_turn: 1,
-      },
-    ];
-
-    const result = selectQuestion(
-      [
-        candidate({ question_id: "plain", target_elements: ["E004"] }),
-        candidate({ question_id: "resolving", target_elements: ["E003"] }),
-      ],
-      { states: baseStates, contradictions, askedQuestions: [] }
-    );
-
-    expect(result.selected?.question_id).toBe("resolving");
-    const breakdown = result.breakdowns.find((b) => b.question_id === "resolving")!;
-    expect(breakdown.contradiction_relevance).toBeCloseTo(0.9, 10);
+  it("stays on the topic for four questions", () => {
+    expect(nextMode(asked(["opening"]))).toBe("deepen");
+    expect(nextMode(asked(["opening", "deepen"]))).toBe("deepen");
+    expect(nextMode(asked(["opening", "deepen", "deepen"]))).toBe("deepen");
   });
 
-  it("keeps QValue inside 0..1", () => {
-    const breakdown = scoreCandidate(candidate({ question_id: "q", expected_yield: 1 }), {
-      states: baseStates,
-      contradictions: [],
-      askedQuestions: [],
-    });
-    expect(breakdown.q_value).toBeGreaterThan(0);
-    expect(breakdown.q_value).toBeLessThanOrEqual(1);
+  it("switches once the topic has had its four", () => {
+    const block = asked(["opening", "deepen", "deepen", "deepen"]);
+    expect(block).toHaveLength(TOPIC_TURNS);
+    expect(topicRun(block)).toBe(TOPIC_TURNS);
+    expect(nextMode(block)).toBe("switch");
+  });
+
+  it("releases the topic early on a flat わからない", () => {
+    expect(nextMode(asked(["opening"]), "flat_unknown")).toBe("switch");
+  });
+
+  it("keeps digging when the user reaches for a metaphor or answers sideways", () => {
+    // Both mean the question landed near something; neither is an empty subject.
+    expect(nextMode(asked(["opening"]), "metaphor")).toBe("deepen");
+    expect(nextMode(asked(["opening"]), "deflect")).toBe("deepen");
+  });
+
+  it("does not let a signal extend a topic past its four", () => {
+    const spent = asked(["opening", "deepen", "deepen", "deepen"]);
+    expect(nextMode(spent, "metaphor")).toBe("switch");
   });
 });
 
-describe("fallbacks (§17/§24)", () => {
-  it("provides a broad opening question", () => {
-    const opening = pickOpeningQuestion();
-    expect(opening.text.length).toBeGreaterThan(0);
-    expect([...opening.text].length).toBeLessThanOrEqual(120);
+describe("openers", () => {
+  it("hands out the four openers in file order, one per topic", () => {
+    const history: AskedQuestion[] = [];
+    const seen: string[] = [];
+    for (let i = 0; i < OPENING_QUESTIONS.length; i++) {
+      const opener = pickOpeningQuestion(history)!;
+      seen.push(opener.question_id);
+      history.push(askedQuestion({ turn: i, text: opener.text, mode: "switch" }));
+    }
+    expect(seen).toEqual(OPENING_QUESTIONS.map((q) => q.question_id));
   });
 
+  it("is deterministic — the same history always yields the same opener", () => {
+    expect(pickOpeningQuestion()!.question_id).toBe(pickOpeningQuestion()!.question_id);
+    expect(pickOpeningQuestion()!.question_id).toBe(OPENING_QUESTIONS[0].question_id);
+  });
+
+  it("returns null once all four are spent, so Call B has to find the subject", () => {
+    const history = OPENING_QUESTIONS.map((q, i) =>
+      askedQuestion({ turn: i, text: q.text, mode: "switch" })
+    );
+    expect(pickOpeningQuestion(history)).toBeNull();
+  });
+});
+
+describe("fallbacks", () => {
   it("returns an unused fallback and skips asked ones", () => {
-    const first = pickFallbackQuestion([], baseStates)!;
-    const asked: AskedQuestion[] = [
-      {
-        turn: 1,
-        text: first.text,
-        target_elements: first.target_elements,
-        probe_kind: first.probe_kind,
-        q_value: 0,
-      },
-    ];
-    const second = pickFallbackQuestion(asked, baseStates)!;
+    const first = pickFallbackQuestion([])!;
+    const second = pickFallbackQuestion([askedQuestion({ text: first.text })])!;
     expect(second.question_id).not.toBe(first.question_id);
   });
 
   it("respects banned probe kinds", () => {
-    const picked = pickFallbackQuestion([], baseStates, ["failure", "conflict"]);
+    const picked = pickFallbackQuestion([], ["failure", "conflict"]);
     expect(picked).not.toBeNull();
     expect(["failure", "conflict"]).not.toContain(picked!.probe_kind);
+  });
+});
+
+describe("selectQuestion", () => {
+  it("takes the model's first choice when nothing is a repeat", () => {
+    const selected = selectQuestion(
+      [candidate("a", "最初にどこから手をつけましたか"), candidate("b", "別の質問です")],
+      { askedQuestions: [] }
+    );
+    expect(selected?.question_id).toBe("a");
+  });
+
+  it("skips a near-repeat and takes the next one", () => {
+    const history = [askedQuestion({ text: "誰かの反対を押し切って決めたことはありますか" })];
+    const selected = selectQuestion(
+      [
+        candidate("repeat", "誰かの反対を押し切って決めたことはありましたか"),
+        candidate("fresh", "そのとき、何が引っかかっていましたか"),
+      ],
+      { askedQuestions: history }
+    );
+    expect(selected?.question_id).toBe("fresh");
+  });
+
+  it("returns null when every candidate is a near duplicate", () => {
+    const history = [askedQuestion({ text: "誰かの反対を押し切って決めたことはありますか" })];
+    const selected = selectQuestion(
+      [
+        candidate("a", "誰かの反対を押し切って決めたことはありましたか"),
+        candidate("b", "誰かの反対を押し切って決めたことはありますか"),
+      ],
+      { askedQuestions: history }
+    );
+    expect(selected).toBeNull();
   });
 });

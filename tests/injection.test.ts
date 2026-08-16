@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
 import injectionFixture from "./fixtures/injectionAnswer.json";
 import { EvidenceExtractionSchema } from "@/lib/validation/schemas";
-import { verifyEvidenceQuotes } from "@/lib/validation/quoteVerifier";
 import { validateSemanticCandidates } from "@/lib/engine/contradictionEngine";
 import { applyTurn } from "@/lib/engine/turnUpdate";
 import { wrapUserAnswer } from "@/lib/ai/prompts";
 import { ELEMENT_IDS } from "@/lib/model/elements";
-import { uniformStates } from "./helpers";
+import { splitByGrounding, uniformStates, userTranscript } from "./helpers";
 
 /**
  * §34.3 — prompt injection.
@@ -17,6 +16,7 @@ import { uniformStates } from "./helpers";
  */
 
 const answer = injectionFixture.user_answer;
+const transcript = userTranscript(answer);
 
 describe("structural defences", () => {
   it("rejects the injected item that names a non-existent element", () => {
@@ -33,12 +33,12 @@ describe("structural defences", () => {
       ],
       contradiction_candidates: [],
     });
-    const verified = verifyEvidenceQuotes(parsed.evidence, answer);
+    const verified = splitByGrounding(parsed.evidence, transcript);
 
     // The injected instruction IS what the user typed, so quote verification
     // cannot reject it — that is exactly why the numbers are computed in code.
     expect(verified.accepted.map((e) => e.element_id)).toEqual(["E001"]);
-    expect(verified.rejected.map((r) => r.evidence.element_id)).toEqual(["E032"]);
+    expect(verified.rejected.map((e) => e.element_id)).toEqual(["E032"]);
   });
 
   it("discards contradiction candidates that reference invented evidence ids", () => {
@@ -70,7 +70,7 @@ describe("model state after an injection attempt", () => {
       ],
       contradiction_candidates: [],
     });
-    const verified = verifyEvidenceQuotes(parsed.evidence, answer);
+    const verified = splitByGrounding(parsed.evidence, transcript);
 
     const result = applyTurn({
       turn: 1,

@@ -2,15 +2,21 @@ import { describe, expect, it } from "vitest";
 import analystFixture from "./fixtures/analystResponse.json";
 import { groundedAnswer } from "./fixtures/userAnswers";
 import { EvidenceExtractionSchema } from "@/lib/validation/schemas";
-import { verifyEvidenceQuotes } from "@/lib/validation/quoteVerifier";
 import {
   applyTurnLimits,
   MAX_ELEMENTS_PER_TURN,
   MAX_EVIDENCE_PER_TURN,
 } from "@/lib/engine/scoreEngine";
+import { splitByGrounding, userTranscript } from "./helpers";
 import type { EvidenceDraft, EvidenceType } from "@/lib/types/diagnosis";
 
-/** Phase 5 — extraction fixture → validated, grounded evidence. */
+/**
+ * The evidence shape and the per-turn intake limits.
+ *
+ * These cover `lib/engine/*`, which is retained but no longer wired into the
+ * request path — the schema and the formulas still have to be correct for the
+ * decision about whether to keep them to be a real decision.
+ */
 
 function draft(overrides: Partial<EvidenceDraft> & { element_id: string }): EvidenceDraft {
   return {
@@ -32,7 +38,7 @@ describe("Call A fixture", () => {
 
   it("maps the fixture utterance onto the expected elements", () => {
     const parsed = EvidenceExtractionSchema.parse(analystFixture);
-    const verified = verifyEvidenceQuotes(parsed.evidence, groundedAnswer);
+    const verified = splitByGrounding(parsed.evidence, userTranscript(groundedAnswer));
 
     expect(verified.accepted).toHaveLength(3);
     expect(verified.accepted.map((e) => e.element_id).sort()).toEqual(["E001", "E029", "E051"]);

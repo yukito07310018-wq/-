@@ -27,6 +27,26 @@ export class RateLimitedError extends Error {
   }
 }
 
+/**
+ * The model hit `max_tokens` mid-answer.
+ *
+ * This is its own error type because it used to be invisible. A truncated reply
+ * is a JSON parse failure, the parse failure was retried twice into the same
+ * wall, and the exhausted call threw a generic "AI unavailable" that the caller
+ * caught and turned into "zero evidence, carry on". A whole session's output
+ * was lost that way while every log line said the turn had succeeded. Raising
+ * the ceiling makes it rarer; naming the failure is what makes it visible when
+ * it happens anyway.
+ */
+export class ModelOutputTruncatedError extends Error {
+  constructor(readonly label: string, readonly maxTokens: number) {
+    super(
+      `${label}: モデルの出力が上限 ${maxTokens} トークンで途中終了しました。読み取り結果は保存されていません。`
+    );
+    this.name = "ModelOutputTruncatedError";
+  }
+}
+
 export function getModelId(): string {
   return process.env.ANTHROPIC_MODEL?.trim() || DEFAULT_MODEL;
 }
@@ -96,8 +116,14 @@ export interface RawCallOptions {
   prefill?: string;
 }
 
+export interface ModelReply {
+  text: string;
+  /** True when the model stopped because it ran out of output budget. */
+  truncated: boolean;
+}
+
 /** One completion, with timeout and transport-level retry. */
-export async function callModel(options: RawCallOptions): Promise<string> {
+export async function callModel(options: RawCallOptions): Promise<ModelReply> {
   const anthropic = getClient();
   const model = getModelId();
 
@@ -130,7 +156,10 @@ export async function callModel(options: RawCallOptions): Promise<string> {
         .filter((block): block is Anthropic.TextBlock => block.type === "text")
         .map((block) => block.text)
         .join("");
-      return (options.prefill ?? "") + text;
+      return {
+        text: (options.prefill ?? "") + text,
+        truncated: response.stop_reason === "max_tokens",
+      };
     } catch (error) {
       lastError = error;
       const retryable = isRetryableStatus(error) || controller.signal.aborted;
@@ -182,9 +211,19 @@ export async function callModelStructured<T>(options: StructuredCallOptions<T>):
       user: feedback ? `${options.user}\n\n${feedback}` : options.user,
     });
 
+    // Truncation is not a malformed answer, it is an unfinished one. Retrying
+    // asks the same question with the same budget and runs into the same wall,
+    // so it is reported rather than repaired.
+    if (raw.truncated) {
+      console.error(
+        `[ai] ${options.label}: output truncated at max_tokens=${options.maxTokens}; raising the limit is the fix`
+      );
+      throw new ModelOutputTruncatedError(options.label, options.maxTokens);
+    }
+
     let parsed: unknown;
     try {
-      parsed = JSON.parse(extractJson(raw));
+      parsed = JSON.parse(extractJson(raw.text));
     } catch {
       feedback = `前回の出力は JSON として解析できませんでした。マークダウンや説明文を含めず、JSON オブジェクトのみを出力してください。`;
       console.warn(`[ai] ${options.label}: JSON parse failed (attempt ${attempt + 1})`);

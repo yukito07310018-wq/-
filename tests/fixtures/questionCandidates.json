@@ -1,26 +1,24 @@
 {
-  "note": "Call B output shape.",
+  "note": "Call B output shape. No target_elements: the interviewer is no longer shown an element catalogue.",
+  "answer_signal": "normal",
   "questions": [
     {
-      "text": "誰かの反対を押し切って決めたことはありますか。そのとき何を根拠にしましたか。",
-      "target_elements": ["E051", "E032"],
+      "text": "その「もういい」と思ったのは、どのあたりでしたか。",
       "probe_kind": "decision",
       "expected_yield": 0.8,
-      "rationale": "判断独立性の証拠が不足している。"
+      "rationale": "本人が使った語をそのまま起点にしている。"
     },
     {
-      "text": "続けているうちに、やり方を自分で変えたことはありますか。どこを変えましたか。",
-      "target_elements": ["E066", "E064"],
+      "text": "最初にどこから手をつけましたか。",
       "probe_kind": "behavior",
       "expected_yield": 0.7,
-      "rationale": "行動特性の証拠がない。"
+      "rationale": "本人が話に出した行動の中の分岐を掘る。"
     },
     {
-      "text": "十年後に自分の仕事がどう変わっていると思いますか。その理由も教えてください。",
-      "target_elements": ["E018", "E097"],
-      "probe_kind": "future",
+      "text": "具体的にどうなっていたら良かったと思いますか。",
+      "probe_kind": "hypothetical",
       "expected_yield": 0.5,
-      "rationale": "未来志向が未探索。"
+      "rationale": "どうしたかったか。"
     }
   ]
 }

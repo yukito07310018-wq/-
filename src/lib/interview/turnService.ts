@@ -1,22 +1,30 @@
-import { runAnalystCall } from "../ai/analystCall";
 import { runInterviewerCall, runReplyCall } from "../ai/interviewerCall";
-import { selectContextElements } from "../ai/prompts";
-import { aggregateAxes, diagnosisConfidence, overallCoverage } from "../engine/aggregation";
-import { pickFallbackQuestion } from "../engine/fallbackQuestions";
+import { pickFallbackQuestion, pickOpeningQuestion } from "../engine/fallbackQuestions";
 import { computeProgress } from "../engine/progress";
+import { nextMode, topicRun } from "../engine/questionFlow";
 import { selectQuestion } from "../engine/questionSelector";
 import { evaluateTermination, MAX_TURNS } from "../engine/terminationEngine";
-import { applyTurn } from "../engine/turnUpdate";
 import { checkDistress, buildCrisisReply, DISTRESS_BANNED_PROBE_KINDS } from "../safety/distressCheck";
 import * as repo from "../db/repository";
-import type { AskedQuestion, QuestionCandidate } from "../types/diagnosis";
+import type { AskedQuestion, QuestionCandidate, QuestionMode } from "../types/diagnosis";
+import type { ConversationMessage } from "../db/repository";
 
 /**
- * One interview turn, end to end (§22).
+ * One interview turn.
  *
- * Order matters and is not negotiable: safety check → evidence → score →
- * confidence → contradictions → axes → termination → next question. Every
- * numeric step in the middle is a pure function; only the two ends touch the LLM.
+ * The turn no longer extracts anything. Evidence extraction, element updates,
+ * axis aggregation and contradiction detection have all moved out of this path
+ * and into a single reading over the finished conversation
+ * (`interview/readingService`). What a turn does now is: check for distress,
+ * save the answer, decide whether the interview is over, and ask the next
+ * question.
+ *
+ * The reason is not performance. The output this app exists to produce — the
+ * places a person kept coming back to — is not present in any single utterance,
+ * so no amount of per-utterance extraction can find it. Extracting per turn
+ * forced short fragments out of answers that had not finished being answers,
+ * and the interview it steered jumped subject every turn to feed the elements
+ * that looked least measured.
  */
 
 export interface TurnOutcome {
@@ -34,19 +42,19 @@ export async function processTurn(sessionId: string, message: string): Promise<T
 
   const turn = session.turnCount + 1;
 
-  const [states, priorEvidence, priorContradictions, askedQuestions, conversation, confidenceHistory] =
-    await Promise.all([
-      repo.loadElementStates(sessionId),
-      repo.loadEvidence(sessionId),
-      repo.loadContradictions(sessionId),
-      repo.loadAskedQuestions(sessionId),
-      repo.loadConversation(sessionId),
-      repo.loadMeanConfidenceHistory(sessionId),
-    ]);
+  const [askedQuestions, conversation] = await Promise.all([
+    repo.loadAskedQuestions(sessionId),
+    repo.loadConversation(sessionId),
+  ]);
 
   await repo.saveConversationTurn(sessionId, turn, "user", message);
+  await repo.setTurnCount(sessionId, turn);
 
-  // --- safety gate (§34.2) — before any extraction --------------------------
+  // --- safety gate (§34.2) --------------------------------------------------
+  // Kept exactly where it was. This app digs into irritation, friction and the
+  // things that did not sit right, so serious distress is a foreseeable outcome
+  // of the design rather than an edge case; moving the extraction to the end of
+  // the session does not change why this runs at the start of every turn.
   const distress = await checkDistress(message);
   if (distress.level === "crisis") {
     const reply = buildCrisisReply();
@@ -55,214 +63,147 @@ export async function processTurn(sessionId: string, message: string): Promise<T
     return {
       reply,
       turn,
-      progress: computeProgress({
-        turn,
-        meanConfidence: diagnosisConfidence(states),
-        overallCoverage: overallCoverage(aggregateAxes(states)),
-      }),
+      progress: computeProgress({ turn }),
       isComplete: false,
       resultUrl: null,
       aborted: true,
     };
   }
 
-  const lastQuestion = askedQuestions[askedQuestions.length - 1]?.text ?? "";
-  const recentlyUpdated = [...states.values()]
-    .filter((s) => s.last_updated_turn >= turn - 3 && s.evidence_count > 0)
-    .map((s) => s.element_id);
+  const progress = computeProgress({ turn });
 
-  // --- Call A: evidence extraction (§22-3) ----------------------------------
-  let analyst;
-  try {
-    analyst = await runAnalystCall({
-      question: lastQuestion,
-      answer: message,
-      elementIds: selectContextElements({
-        states,
-        contradictions: priorContradictions,
-        recentlyUpdated,
-        turn,
-      }),
-      conversation,
-      recentEvidence: priorEvidence,
-      contradictions: priorContradictions,
-    });
-  } catch (error) {
-    // §36 failure handling: a failed extraction must not stop the conversation.
-    console.error("[turnService] analyst call failed, continuing with zero evidence:", error);
-    analyst = {
-      evidence: [],
-      contradictionCandidates: [],
-      rejectedCount: 0,
-      duplicateCount: 0,
-      repaired: false,
+  // --- termination -----------------------------------------------------------
+  const termination = evaluateTermination({ turn });
+  if (termination.shouldComplete) {
+    const reply = buildCompletionReply();
+    await repo.saveConversationTurn(sessionId, turn, "assistant", reply);
+    await repo.setSessionStatus(sessionId, "completed");
+    return {
+      reply,
+      turn,
+      progress,
+      isComplete: true,
+      resultUrl: `/result/${sessionId}`,
+      aborted: false,
     };
   }
 
-  // --- deterministic model update (§22-4〜9) --------------------------------
-  const update = applyTurn({
+  // --- next question ---------------------------------------------------------
+  const next = await chooseNextQuestion({
     turn,
-    states,
-    priorEvidence,
-    priorContradictions,
-    drafts: analyst.evidence,
-    semanticCandidates: analyst.contradictionCandidates,
-    makeEvidenceId: (i) => `ev-${turn}-${i}`,
-    makeContradictionId: (i) => `cx-${turn}-${i}`,
-  });
-
-  await repo.persistTurn({
-    sessionId,
-    turn,
-    evidence: update.newEvidence,
-    changedStates: update.changedStates,
-    newContradictions: update.newContradictions,
-    resolutions: update.resolutions,
-    axes: update.axes,
-  });
-
-  const progress = computeProgress({
-    turn,
-    meanConfidence: update.meanConfidence,
-    overallCoverage: update.coverage,
-  });
-
-  // --- termination (§33) -----------------------------------------------------
-  const termination = evaluateTermination({
-    turn,
-    meanConfidence: update.meanConfidence,
-    overallCoverage: update.coverage,
-    unresolvedContradictions: update.unresolvedContradictions,
-    meanConfidenceHistory: confidenceHistory,
-  });
-
-  if (termination.shouldComplete) {
-    const reply = buildCompletionReply(termination.reason === "max_turns");
-    await repo.saveConversationTurn(sessionId, turn, "assistant", reply);
-    await repo.setSessionStatus(sessionId, "completed");
-    return { reply, turn, progress, isComplete: true, resultUrl: `/result/${sessionId}`, aborted: false };
-  }
-
-  // --- Call B + selection (§22-12〜14) --------------------------------------
-  const bannedKinds = distress.level === "distress" ? [...DISTRESS_BANNED_PROBE_KINDS] : [];
-  const nextQuestion = await chooseNextQuestion({
-    sessionId,
-    turn,
-    states: update.states,
-    contradictions: update.contradictions,
     askedQuestions,
-    conversation,
-    bannedKinds,
+    conversation: [...conversation, { turnIndex: turn, role: "user", content: message }],
+    bannedKinds: distress.level === "distress" ? [...DISTRESS_BANNED_PROBE_KINDS] : [],
   });
 
-  // --- reply (§22-15) --------------------------------------------------------
   let reply: string;
   try {
     reply = await runReplyCall({
       answer: message,
-      nextQuestion: nextQuestion.question.text,
+      nextQuestion: next.question.text,
       distress: distress.level === "distress",
     });
   } catch (error) {
     console.error("[turnService] reply call failed, sending question only:", error);
-    reply = nextQuestion.question.text;
+    reply = next.question.text;
   }
 
   await repo.saveConversationTurn(sessionId, turn, "assistant", reply);
   await repo.saveAskedQuestion(sessionId, {
     turn,
-    text: nextQuestion.question.text,
-    target_elements: nextQuestion.question.target_elements,
-    probe_kind: nextQuestion.question.probe_kind,
-    q_value: nextQuestion.qValue,
+    text: next.question.text,
+    target_elements: next.question.target_elements,
+    probe_kind: next.question.probe_kind,
+    mode: next.mode,
   });
 
   return { reply, turn, progress, isComplete: false, resultUrl: null, aborted: false };
 }
 
 interface ChooseQuestionInput {
-  sessionId: string;
   turn: number;
-  states: ReadonlyMap<string, import("../types/diagnosis").ElementState>;
-  contradictions: readonly import("../types/diagnosis").Contradiction[];
   askedQuestions: readonly AskedQuestion[];
-  conversation: readonly import("../db/repository").ConversationMessage[];
+  conversation: readonly ConversationMessage[];
   bannedKinds: readonly string[];
 }
 
-/**
- * Generates candidates and picks one by QValue. Call B is retried once when
- * every candidate is a near-duplicate; after that a pre-authored fallback is
- * used so the interview always has something to ask (§17).
- */
-async function chooseNextQuestion(
-  input: ChooseQuestionInput
-): Promise<{ question: QuestionCandidate; qValue: number }> {
-  const ctx = {
-    states: input.states,
-    contradictions: input.contradictions,
-    askedQuestions: input.askedQuestions,
-  };
+export interface ChosenQuestion {
+  question: QuestionCandidate;
+  mode: QuestionMode;
+}
 
-  const recentlyUpdated = [...input.states.values()]
-    .filter((s) => s.evidence_count > 0)
-    .map((s) => s.element_id);
+/**
+ * Picks the next question, and records which of the three things it did.
+ *
+ * Entering a topic is deterministic: the next unused opener, in file order, with
+ * no model call at all. Only deepening needs Call B, and the one thing the model
+ * is allowed to change about the plan is releasing the interview from a topic
+ * the user has gone flat on — `flat_unknown`. Everything else keeps it where it
+ * is, which is the point: four turns on one subject is how a return becomes
+ * observable later.
+ */
+async function chooseNextQuestion(input: ChooseQuestionInput): Promise<ChosenQuestion> {
+  const planned = nextMode(input.askedQuestions);
+
+  if (planned === "opening" || planned === "switch") {
+    const opener = pickOpeningQuestion(input.askedQuestions);
+    if (opener) return { question: opener, mode: planned };
+    // All four openers spent — Call B has to find the next subject itself.
+  }
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const candidates = await runInterviewerCall(
+      const result = await runInterviewerCall(
         {
-          elementIds: selectContextElements({
-            states: input.states,
-            contradictions: input.contradictions,
-            recentlyUpdated,
-            turn: input.turn,
-          }),
-          states: input.states,
+          mode: planned,
+          topicRun: topicRun(input.askedQuestions),
           conversation: input.conversation,
-          contradictions: input.contradictions,
           askedQuestions: input.askedQuestions,
           avoidProbeKinds: input.bannedKinds,
         },
         input.turn
       );
 
-      const selection = selectQuestion(candidates, ctx);
-      if (selection.selected) {
-        return { question: selection.selected, qValue: selection.qValue };
+      const mode = nextMode(input.askedQuestions, result.signal);
+
+      // The answer went flat while we were planning to dig: take a fresh opener
+      // if one is left rather than the model's improvised change of subject.
+      if (mode === "switch" && planned === "deepen") {
+        const opener = pickOpeningQuestion(input.askedQuestions);
+        if (opener) return { question: opener, mode };
       }
+
+      const selected = selectQuestion(result.candidates, { askedQuestions: input.askedQuestions });
+      if (selected) return { question: selected, mode };
       console.warn(`[turnService] all candidates excluded as duplicates (attempt ${attempt + 1})`);
     } catch (error) {
       console.error(`[turnService] interviewer call failed (attempt ${attempt + 1}):`, error);
     }
   }
 
-  const fallback = pickFallbackQuestion(input.askedQuestions, input.states, input.bannedKinds);
-  if (fallback) return { question: fallback, qValue: 0 };
+  const fallback = pickFallbackQuestion(input.askedQuestions, input.bannedKinds);
+  if (fallback) return { question: fallback, mode: "switch" };
 
-  // Every fallback used too: ask the user to expand rather than repeat verbatim.
+  // Every pre-authored question used too: ask the user to expand rather than
+  // repeat one verbatim.
   return {
     question: {
       question_id: `open-${input.turn}`,
       text: "ここまでのお話の中で、まだ話していないけれど自分にとって大きかった出来事はありますか。",
-      target_elements: ["E010", "E090"],
+      target_elements: [],
       probe_kind: "experience",
       expected_yield: 0.5,
       rationale: "exhausted fallback set",
     },
-    qValue: 0,
+    mode: "switch",
   };
 }
 
-function buildCompletionReply(reachedMaxTurns: boolean): string {
-  const head = reachedMaxTurns
-    ? "ここまでの対話で、十分な量の材料が集まりました。"
-    : "ここまでの対話で、モデルを組み立てるのに十分な材料が集まりました。";
+function buildCompletionReply(): string {
   return [
-    head,
+    "ここまでのお話、ありがとうございました。ここで対話を終わりにします。",
     "",
-    "結果画面では、10軸それぞれの傾向と、その根拠になった発言を確認できます。",
-    "確からしさ（confidence）が低い軸は「情報不足」として表示されます。今回の対話の範囲では判断材料が足りない、という意味です。",
+    "結果画面では、話に出てきた話題ごとに、あなたが実際に使っていた言葉をそのまま並べて表示します。",
   ].join("\n");
 }
 

@@ -6,9 +6,9 @@ export default function HomePage() {
       <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">AI固有創造性診断</h1>
 
       <p className="mt-8 text-lg leading-relaxed text-[color:var(--muted)]">
-        あなた自身もまだ言語化できていない
+        あなたが何度も戻ってくる場所を、
         <br />
-        あなたの特徴を、AIとの対話から可視化します。
+        あなた自身の言葉のまま取り出します。
       </p>
 
       <div className="mt-10 rounded-xl border border-[color:var(--border)] bg-[color:var(--surface)] p-6">
@@ -16,10 +16,11 @@ export default function HomePage() {
           この診断の仕組み
         </h2>
         <ul className="mt-4 space-y-2 text-sm text-[color:var(--muted)]">
-          <li>・AIが質問し、あなたが自分の経験や選択を答えます。</li>
-          <li>・AIは回答から「根拠（Evidence）」を抜き出し、100の要素モデルを更新します。</li>
-          <li>・要素は10の軸に集約され、まだ分かっていない部分を狙って次の質問が選ばれます。</li>
-          <li>・所要時間の目安は 10〜15問、15〜25分程度です。</li>
+          <li>・AIが薄く広い問いを出し、どの話題を話すかはあなたが選びます。</li>
+          <li>・選んだ話題を数ターン掘り下げます。話が尽きたら別の話題へ移ります。</li>
+          <li>・対話が終わったあとで、全文をまとめて一度だけ読み取ります。途中では何も判定しません。</li>
+          <li>・結果に出るのは、話題ごとの、あなたが実際に使った言葉です。点数はつきません。</li>
+          <li>・最大10問。いつでも「ここまでにする」で終われます。</li>
         </ul>
       </div>
 

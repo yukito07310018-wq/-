@@ -8,9 +8,9 @@ import {
   type ReplyPromptInput,
 } from "./prompts";
 import { QuestionGenerationSchema } from "../validation/schemas";
-import type { QuestionCandidate } from "../types/diagnosis";
+import type { AnswerSignal, QuestionCandidate } from "../types/diagnosis";
 
-/** Call B (§22 step 12): question candidate generation at temperature 0.7. */
+/** Call B: question candidate generation at temperature 0.7. */
 
 export const INTERVIEWER_MAX_TOKENS = 800;
 export const INTERVIEWER_TEMPERATURE = 0.7;
@@ -18,38 +18,47 @@ export const REPLY_MAX_TOKENS = 400;
 export const REPLY_TEMPERATURE = 0.7;
 export const MAX_QUESTION_CHARS = 120;
 
+export interface InterviewerResult {
+  candidates: QuestionCandidate[];
+  /** What the model read in the answer it was shown. Code decides what to do with it. */
+  signal: AnswerSignal;
+}
+
 /**
- * Generates 3-5 candidates. Malformed-but-valid outputs (too long, closed
- * questions) are filtered here rather than being sent to the selector, so the
- * §16 rules hold regardless of what the model returns.
+ * Generates 3-5 candidates. Malformed-but-valid outputs (too long, banned probe
+ * kinds) are filtered here rather than being passed on, so those rules hold
+ * regardless of what the model returns.
  */
 export async function runInterviewerCall(
   input: InterviewerPromptInput,
   turn: number
-): Promise<QuestionCandidate[]> {
+): Promise<InterviewerResult> {
   const result = await callModelStructured({
     label: "interviewer",
     system: INTERVIEWER_SYSTEM_PROMPT,
     user: buildInterviewerUserPrompt(input),
     maxTokens: INTERVIEWER_MAX_TOKENS,
     temperature: INTERVIEWER_TEMPERATURE,
-    prefill: '{"questions":',
+    prefill: '{"answer_signal":',
     schema: QuestionGenerationSchema,
   });
 
   const banned = new Set(input.avoidProbeKinds);
 
-  return result.questions
-    .filter((q) => [...q.text].length <= MAX_QUESTION_CHARS)
-    .filter((q) => !banned.has(q.probe_kind))
-    .map((q, index) => ({
-      question_id: `q-${turn}-${index}`,
-      text: q.text.trim(),
-      target_elements: q.target_elements,
-      probe_kind: q.probe_kind,
-      expected_yield: q.expected_yield,
-      rationale: q.rationale,
-    }));
+  return {
+    signal: result.answer_signal,
+    candidates: result.questions
+      .filter((q) => [...q.text].length <= MAX_QUESTION_CHARS)
+      .filter((q) => !banned.has(q.probe_kind))
+      .map((q, index) => ({
+        question_id: `q-${turn}-${index}`,
+        text: q.text.trim(),
+        target_elements: [],
+        probe_kind: q.probe_kind,
+        expected_yield: q.expected_yield,
+        rationale: q.rationale,
+      })),
+  };
 }
 
 /**
@@ -66,7 +75,7 @@ export async function runReplyCall(input: ReplyPromptInput): Promise<string> {
     temperature: REPLY_TEMPERATURE,
   });
 
-  const acknowledgement = stripQuestion(raw.trim(), input.nextQuestion);
+  const acknowledgement = stripQuestion(raw.text.trim(), input.nextQuestion);
   return acknowledgement ? `${acknowledgement}\n\n${input.nextQuestion}` : input.nextQuestion;
 }
 

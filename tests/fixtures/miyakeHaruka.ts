@@ -72,6 +72,20 @@ export const CONVERSATION: ConversationMessage[] = [
 
 export const CURRENT_QUESTION = "その「見る位置」の話を、仕事以外の場面でも考えることはありますか。";
 
+/**
+ * The finished session, which is what the batch reading is given: all four
+ * user answers and all four interviewer lines, in order.
+ *
+ * Both sides are here on purpose. The reading is shown the AI's questions —
+ * it needs them to see where the subject changed — and must still never quote
+ * one, which is what makes this fixture the test of the corpus limit.
+ */
+export const FULL_CONVERSATION: ConversationMessage[] = [
+  { turnIndex: 0, role: "assistant", content: OPENING_QUESTION },
+  ...CONVERSATION,
+  { turnIndex: 4, role: "user", content: TURN4_ANSWER },
+];
+
 /* -------------------------------------------------------------------------- */
 /* The 22 quote units                                                          */
 /* -------------------------------------------------------------------------- */

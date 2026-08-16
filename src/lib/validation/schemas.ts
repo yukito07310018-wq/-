@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { EVIDENCE_TYPES, PROBE_KINDS } from "../types/diagnosis";
+import { ANSWER_SIGNALS, EVIDENCE_TYPES, PROBE_KINDS } from "../types/diagnosis";
 import { KNOWN_ELEMENT_IDS } from "../model/elementIds";
 
 /* -------------------------------------------------------------------------- */
@@ -71,7 +71,7 @@ export const ElementIdSchema = z
 /** §9: one evidence item. The LLM never emits score/confidence — only these fields. */
 export const EvidenceItemSchema = z.object({
   element_id: ElementIdSchema,
-  quote: z.string().min(1).max(400), // hard length policy (3-120) enforced in quoteVerifier
+  quote: z.string().min(1).max(400), // hard length policy (3-120) enforced in validation/transcript
   type: z.enum(EVIDENCE_TYPES),
   strength: z.number().min(0).max(1),
   reliability: z.number().min(0).max(1),
@@ -91,15 +91,20 @@ export const EvidenceExtractionSchema = z.object({
   contradiction_candidates: z.array(ContradictionCandidateSchema).max(10).default([]),
 });
 
+/**
+ * A candidate next question. No `target_elements`: the interviewer is no longer
+ * shown an element catalogue, because a question cannot be aimed at one element
+ * — any answer touches many at once. Elements are the reading's vocabulary.
+ */
 export const QuestionCandidateSchema = z.object({
   text: z.string().min(1).max(200),
-  target_elements: z.array(ElementIdSchema).min(1).max(4),
   probe_kind: z.enum(PROBE_KINDS),
   expected_yield: z.number().min(0).max(1),
   rationale: z.string().max(300).default(""),
 });
 
 export const QuestionGenerationSchema = z.object({
+  answer_signal: z.enum(ANSWER_SIGNALS).default("normal"),
   questions: z.array(QuestionCandidateSchema).min(1).max(8),
 });
 
@@ -109,44 +114,41 @@ export const DistressCheckSchema = z.object({
 });
 
 /* -------------------------------------------------------------------------- */
+/* The batch reading                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * An element id, or null when none of the hundred fits.
+ *
+ * An unrecognised id is coerced to null rather than failing the parse: one bad
+ * label should cost that segment its name, not cost the session its entire
+ * reading. Free-text topic names are refused outright for the same reason the
+ * interviewer may not paraphrase — a name the model invented is the model's
+ * word for the person's subject, not the person's.
+ */
+export const ReadingElementIdSchema = z.preprocess(
+  (value) => (typeof value === "string" && KNOWN_ELEMENT_IDS.has(value) ? value : null),
+  z.string().nullable()
+);
+
+export const ReadingSegmentSchema = z.object({
+  from_turn: z.number().int().min(0),
+  to_turn: z.number().int().min(0),
+  element_id: ReadingElementIdSchema,
+  quotes: z.array(z.string().min(1).max(400)).max(12).default([]),
+});
+
+export const ReadingExtractionSchema = z.object({
+  segments: z.array(ReadingSegmentSchema).max(40),
+});
+
+/* -------------------------------------------------------------------------- */
 /* Internal / API schemas                                                      */
 /* -------------------------------------------------------------------------- */
 
-export const ElementUpdateSchema = z.object({
-  element_id: ElementIdSchema,
-  score: z.number().min(0).max(100),
-  confidence: z.number().min(0).max(1),
-  delta: z.number(),
-  cause_evidence_ids: z.array(z.string()),
+export const FinishRequestSchema = z.object({
+  session_id: z.string().min(1).max(64),
 });
-
-export const AxisAggregationSchema = z.object({
-  axis_id: z.string().regex(/^AX\d{2}$/),
-  name: z.string(),
-  score: z.number().min(0).max(100),
-  confidence: z.number().min(0).max(1),
-  coverage: z.number().min(0).max(1),
-});
-
-export const QuestionSelectionSchema = z.object({
-  text: z.string().min(1),
-  target_elements: z.array(z.string()),
-  probe_kind: z.enum(PROBE_KINDS),
-  q_value: z.number(),
-});
-
-export const TurnProcessingSchema = z.object({
-  turn: z.number().int().min(0),
-  evidence_accepted: z.number().int().min(0),
-  evidence_rejected: z.number().int().min(0),
-  element_updates: z.array(ElementUpdateSchema),
-  axes: z.array(AxisAggregationSchema),
-  new_contradictions: z.number().int().min(0),
-  next_question: QuestionSelectionSchema.nullable(),
-  is_complete: z.boolean(),
-});
-
-export const StartRequestSchema = z.object({}).loose();
 
 export const MessageRequestSchema = z.object({
   session_id: z.string().min(1).max(64),

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { maxSimilarity, normalizeText, trigramJaccard } from "@/lib/engine/similarity";
-import { scoreCandidate, SIMILARITY_EXCLUSION, selectQuestion } from "@/lib/engine/questionSelector";
-import { uniformStates } from "./helpers";
-import { ELEMENT_IDS } from "@/lib/model/elements";
-import type { AskedQuestion, QuestionCandidate } from "@/lib/types/diagnosis";
+import {
+  isDuplicateQuestion,
+  SIMILARITY_EXCLUSION,
+  selectQuestion,
+} from "@/lib/engine/questionSelector";
+import { askedQuestion, candidate } from "./helpers";
+import type { AskedQuestion } from "@/lib/types/diagnosis";
 
 /** §21 — deterministic similarity, and its use as a repetition guard. */
 
@@ -61,57 +64,30 @@ describe("maxSimilarity", () => {
 });
 
 describe("repetition guard in selection", () => {
-  const states = uniformStates(ELEMENT_IDS);
-
-  function candidate(text: string, id = "q1"): QuestionCandidate {
-    return {
-      question_id: id,
-      text,
-      target_elements: ["E001"],
-      probe_kind: "experience",
-      expected_yield: 0.7,
-      rationale: "",
-    };
-  }
-
-  const asked: AskedQuestion[] = [
-    {
-      turn: 1,
-      text: "誰かの反対を押し切って決めたことはありますか",
-      target_elements: ["E051"],
-      probe_kind: "decision",
-      q_value: 0.5,
-    },
+  const history: AskedQuestion[] = [
+    askedQuestion({ text: "誰かの反対を押し切って決めたことはありますか", probe_kind: "decision" }),
   ];
 
   it("excludes candidates above the similarity threshold", () => {
-    const breakdown = scoreCandidate(
-      candidate("誰かの反対を押し切って決めたことはありましたか"),
-      { states, contradictions: [], askedQuestions: asked }
-    );
-    expect(breakdown.similarity_penalty).toBeGreaterThan(SIMILARITY_EXCLUSION);
-    expect(breakdown.excluded).toBe(true);
-    expect(breakdown.q_value).toBe(0);
+    const text = "誰かの反対を押し切って決めたことはありましたか";
+    expect(maxSimilarity(text, [history[0].text])).toBeGreaterThan(SIMILARITY_EXCLUSION);
+    expect(isDuplicateQuestion(text, history)).toBe(true);
   });
 
-  it("discounts, but keeps, moderately similar candidates", () => {
-    const distinct = scoreCandidate(candidate("最近やめたことは何ですか。理由も教えてください"), {
-      states,
-      contradictions: [],
-      askedQuestions: asked,
-    });
-    expect(distinct.excluded).toBe(false);
-    expect(distinct.q_value).toBeGreaterThan(0);
+  it("keeps a candidate that only shares a little wording", () => {
+    const text = "最近やめたことは何ですか。理由も教えてください";
+    expect(isDuplicateQuestion(text, history)).toBe(false);
+    expect(selectQuestion([candidate("q1", text)], { askedQuestions: history })).not.toBeNull();
   });
 
   it("returns no selection when every candidate is a near duplicate", () => {
-    const result = selectQuestion(
+    const selected = selectQuestion(
       [
-        candidate("誰かの反対を押し切って決めたことはありましたか", "a"),
-        candidate("誰かの反対を押し切って決めたことはありますか", "b"),
+        candidate("a", "誰かの反対を押し切って決めたことはありましたか"),
+        candidate("b", "誰かの反対を押し切って決めたことはありますか"),
       ],
-      { states, contradictions: [], askedQuestions: asked }
+      { askedQuestions: history }
     );
-    expect(result.selected).toBeNull();
+    expect(selected).toBeNull();
   });
 });

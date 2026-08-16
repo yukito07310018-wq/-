@@ -1,17 +1,14 @@
 import { clamp } from "./scoreEngine";
+import { MAX_TURNS } from "./terminationEngine";
 
-/** §30.1 — progress blends turn count, mean confidence and coverage. */
-export const TARGET_TURNS = 15;
-
-export interface ProgressInput {
-  turn: number;
-  meanConfidence: number;
-  overallCoverage: number;
-}
-
-export function computeProgress({ turn, meanConfidence, overallCoverage }: ProgressInput): number {
-  const turnTerm = 0.45 * Math.min(1, turn / TARGET_TURNS);
-  const confidenceTerm = 0.35 * Math.min(1, meanConfidence / 0.75);
-  const coverageTerm = 0.2 * Math.min(1, overallCoverage / 0.7);
-  return clamp(turnTerm + confidenceTerm + coverageTerm, 0, 1);
+/**
+ * Interview progress.
+ *
+ * Turn count is now the whole of it. The old formula blended mean confidence
+ * and coverage, both of which were per-turn extraction outputs; with the
+ * extraction moved to the end of the session there is nothing to blend, and a
+ * bar driven by numbers that stay at zero only ever showed 45% of itself.
+ */
+export function computeProgress({ turn }: { turn: number }): number {
+  return clamp(turn / MAX_TURNS, 0, 1);
 }

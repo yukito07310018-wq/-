@@ -5,8 +5,9 @@
  *   node scripts/mockAnthropic.mjs &
  *   ANTHROPIC_BASE_URL=http://127.0.0.1:8787 ANTHROPIC_API_KEY=mock npm run dev
  *
- * It answers each of the app's four calls by looking at the system prompt, and
- * grounds analyst quotes in the actual user answer so quote verification passes.
+ * It answers each of the app's calls by looking at the system prompt, and
+ * grounds the reading's quotes in what the user actually said so that quote
+ * verification passes rather than dropping everything.
  */
 import { createServer } from "node:http";
 
@@ -18,15 +19,18 @@ function extractAnswer(text) {
   return m ? m[1] : "";
 }
 
-/** Grabs `count` real substrings of the answer, each 12-60 chars. */
-function realQuotes(answer, count) {
-  const sentences = answer
-    .split(/[。\n]/)
-    .map((s) => s.trim())
-    .filter((s) => [...s].length >= 12);
+/** Every USER line of the transcript the reader prompt lays out, with its turn. */
+function userTurns(userPrompt) {
+  const lines = [...userPrompt.matchAll(/^USER \(turn (\d+)\): (.*)$/gm)];
+  return lines.map((m) => ({ turn: Number(m[1]), text: m[2] }));
+}
+
+/** Real substrings of an utterance, 12-60 characters each. */
+function realQuotes(text, count) {
   const quotes = [];
-  for (const s of sentences) {
-    quotes.push([...s].slice(0, 60).join(""));
+  for (const sentence of text.split(/[。\n]/).map((s) => s.trim())) {
+    if ([...sentence].length < 12) continue;
+    quotes.push([...sentence].slice(0, 60).join(""));
     if (quotes.length >= count) break;
   }
   return quotes;
@@ -34,51 +38,47 @@ function realQuotes(answer, count) {
 
 const ELEMENT_POOL = ["E001", "E051", "E029", "E066", "E081", "E018", "E021", "E092"];
 
-// Rotated independently of the element so evidence diversity actually varies.
-const TYPE_POOL = [
-  "personal_experience",
-  "decision_example",
-  "behavioral_example",
-  "value_statement",
-  "self_description",
-  "reasoning_pattern",
-  "emotional_reaction",
-];
+/**
+ * A reading of the whole conversation: turns grouped into blocks of two, with
+ * the third block deliberately returning to the first block's element so the
+ * return counting has something to count.
+ */
+function readerResponse(userPrompt) {
+  const turns = userTurns(userPrompt);
+  const segments = [];
 
-let analystTurn = 0;
+  for (let i = 0; i < turns.length; i += 2) {
+    const block = turns.slice(i, i + 2);
+    const index = Math.floor(i / 2);
+    segments.push({
+      from_turn: block[0].turn,
+      to_turn: block[block.length - 1].turn,
+      // Block 2 goes back to block 0's subject; block 3 is unlabelled.
+      element_id:
+        index === 2 ? ELEMENT_POOL[0] : index === 3 ? null : ELEMENT_POOL[index % ELEMENT_POOL.length],
+      quotes: block.flatMap((t) => realQuotes(t.text, 2)),
+    });
+  }
 
-function analystResponse(userPrompt) {
-  const answer = extractAnswer(userPrompt);
-  const quotes = realQuotes(answer, 3);
-  analystTurn += 1;
-
-  const evidence = quotes.map((quote, i) => ({
-    element_id: ELEMENT_POOL[(analystTurn + i) % ELEMENT_POOL.length],
-    quote,
-    type: TYPE_POOL[(analystTurn * 2 + i) % TYPE_POOL.length],
-    strength: 0.8,
-    reliability: 0.8,
-    // Flip direction periodically so contradiction detection gets exercised.
-    direction: analystTurn % 5 === 0 && i === 0 ? "negative" : "positive",
-    context: "モック応答による説明文。",
-  }));
-
-  return JSON.stringify({ evidence, contradiction_candidates: [] });
+  return JSON.stringify({ segments });
 }
 
 let questionCounter = 0;
 
-function interviewerResponse() {
+function interviewerResponse(userPrompt) {
   questionCounter += 1;
+  const answer = extractAnswer(userPrompt);
   const kinds = ["experience", "behavior", "decision", "value", "future", "relationship"];
+  // MOCK_FLAT in an answer exercises the early topic release.
+  const signal = answer.includes("MOCK_FLAT") ? "flat_unknown" : "normal";
+
   const questions = [0, 1, 2].map((i) => ({
-    text: `モック質問${questionCounter}-${i}：${["これまでに", "最近", "以前"][i]}あなたが自分で決めて動いた場面を、具体的に教えてください。`,
-    target_elements: [ELEMENT_POOL[(questionCounter + i) % ELEMENT_POOL.length]],
+    text: `モック質問${questionCounter}-${i}：そのとき、${["どうしたかった", "何が引っかかっていた", "どうなっていたら良かった"][i]}と思いますか。`,
     probe_kind: kinds[(questionCounter + i) % kinds.length],
     expected_yield: 0.7 - i * 0.1,
     rationale: "mock",
   }));
-  return JSON.stringify({ questions });
+  return JSON.stringify({ answer_signal: signal, questions });
 }
 
 const server = createServer((req, res) => {
@@ -111,10 +111,10 @@ const server = createServer((req, res) => {
           ? "distress"
           : "none";
       text = JSON.stringify({ level, reason: "mock" });
-    } else if (system.includes("personal-modeling analyst")) {
-      text = analystResponse(userPrompt);
-    } else if (system.includes("adaptive interviewer")) {
-      text = interviewerResponse();
+    } else if (system.includes("You read a finished interview")) {
+      text = readerResponse(userPrompt);
+    } else if (system.includes("You are an adaptive interviewer")) {
+      text = interviewerResponse(userPrompt);
     } else {
       text = "なるほど、詳しく話してくださってありがとうございます。";
     }

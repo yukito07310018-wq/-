@@ -2,17 +2,9 @@ import { customAlphabet } from "nanoid";
 import { prisma } from "./prisma";
 import { ELEMENT_IDS } from "../model/elements";
 import { INITIAL_CONFIDENCE, INITIAL_SCORE } from "../engine/scoreEngine";
-import { EVIDENCE_TYPES, PROBE_KINDS } from "../types/diagnosis";
-import type {
-  AskedQuestion,
-  AxisAggregate,
-  Contradiction,
-  ElementState,
-  Evidence,
-  EvidenceDirection,
-  EvidenceType,
-  ProbeKind,
-} from "../types/diagnosis";
+import { PROBE_KINDS, QUESTION_MODES } from "../types/diagnosis";
+import type { AskedQuestion, ProbeKind, QuestionMode } from "../types/diagnosis";
+import type { Reading, ReadingTopic } from "../types/reading";
 
 /**
  * The only place that knows arrays are stored as JSON strings.
@@ -36,18 +28,14 @@ function serializeStringArray(values: readonly string[]): string {
   return JSON.stringify(values);
 }
 
-function asEvidenceType(value: string): EvidenceType {
-  return (EVIDENCE_TYPES as readonly string[]).includes(value)
-    ? (value as EvidenceType)
-    : "explicit_statement";
-}
-
-function asDirection(value: string): EvidenceDirection {
-  return value === "positive" || value === "negative" ? value : "neutral";
-}
-
 function asProbeKind(value: string): ProbeKind {
   return (PROBE_KINDS as readonly string[]).includes(value) ? (value as ProbeKind) : "experience";
+}
+
+function asQuestionMode(value: string): QuestionMode {
+  return (QUESTION_MODES as readonly string[]).includes(value)
+    ? (value as QuestionMode)
+    : "deepen";
 }
 
 /* -------------------------------------------------------------------------- */
@@ -107,6 +95,10 @@ export async function releaseSessionLock(sessionId: string): Promise<void> {
   await prisma.session.updateMany({ where: { id: sessionId }, data: { processing: false } });
 }
 
+export async function setTurnCount(sessionId: string, turn: number): Promise<void> {
+  await prisma.session.update({ where: { id: sessionId }, data: { turnCount: turn } });
+}
+
 export async function setSessionStatus(
   sessionId: string,
   status: "active" | "completed" | "aborted"
@@ -126,68 +118,15 @@ export async function deleteSession(sessionId: string): Promise<boolean> {
 /* Reads                                                                       */
 /* -------------------------------------------------------------------------- */
 
-export async function loadElementStates(sessionId: string): Promise<Map<string, ElementState>> {
-  const rows = await prisma.elementState.findMany({
-    where: { sessionId },
-    include: { histories: { orderBy: { turn: "asc" } } },
-  });
-
-  const map = new Map<string, ElementState>();
-  for (const row of rows) {
-    map.set(row.elementId, {
-      element_id: row.elementId,
-      score: row.score,
-      confidence: row.confidence,
-      evidence_count: row.evidenceCount,
-      evidence_diversity: row.evidenceDiversity,
-      evidence_type_set: parseStringArray(row.evidenceTypes),
-      last_updated_turn: row.lastUpdatedTurn,
-      history: row.histories.map((h) => ({
-        turn: h.turn,
-        score: h.score,
-        confidence: h.confidence,
-        delta: h.delta,
-        cause_evidence_ids: parseStringArray(h.causeEvidenceIds),
-      })),
-    });
-  }
-  return map;
-}
-
-export async function loadEvidence(sessionId: string): Promise<Evidence[]> {
-  const rows = await prisma.evidence.findMany({
-    where: { sessionId },
-    orderBy: [{ turnId: "asc" }, { createdAt: "asc" }],
-  });
-  return rows.map((r) => ({
-    evidence_id: r.id,
-    turn_id: r.turnId,
-    element_id: r.elementId,
-    quote: r.quote,
-    type: asEvidenceType(r.type),
-    strength: r.strength,
-    reliability: r.reliability,
-    direction: asDirection(r.direction),
-    context: r.context,
-  }));
-}
-
-export async function loadContradictions(sessionId: string): Promise<Contradiction[]> {
-  const rows = await prisma.contradiction.findMany({
-    where: { sessionId },
-    orderBy: { detectedTurn: "asc" },
-  });
-  return rows.map((r) => ({
-    contradiction_id: r.id,
-    elements: parseStringArray(r.elementIds),
-    evidence_a: r.evidenceAId,
-    evidence_b: r.evidenceBId,
-    severity: r.severity,
-    status: r.status === "resolved" ? "resolved" : "unresolved",
-    detected_turn: r.detectedTurn,
-    resolution_note: r.resolutionNote ?? undefined,
-  }));
-}
+/*
+ * There is deliberately no reader here for ElementState, Evidence, ScoreHistory,
+ * Contradiction or AxisSnapshot. Those tables and the pure engines that fill
+ * them are kept — the schema is unchanged and `lib/engine/*` still computes
+ * exactly what it always did — but nothing in the request path reads or writes
+ * them any more. Leaving the accessors in place would let the sequential
+ * extraction grow back one call at a time; without them, reconnecting it is a
+ * visible, deliberate act.
+ */
 
 export async function loadAskedQuestions(sessionId: string): Promise<AskedQuestion[]> {
   const rows = await prisma.questionHistory.findMany({
@@ -199,7 +138,7 @@ export async function loadAskedQuestions(sessionId: string): Promise<AskedQuesti
     text: r.text,
     target_elements: parseStringArray(r.targetElements),
     probe_kind: asProbeKind(r.probeKind),
-    q_value: r.qValue,
+    mode: asQuestionMode(r.mode),
   }));
 }
 
@@ -223,24 +162,6 @@ export async function loadConversation(
     content: r.content,
   }));
   return limit ? mapped.slice(-limit) : mapped;
-}
-
-/** Mean confidence at the end of each past turn, for the saturation check (§33). */
-export async function loadMeanConfidenceHistory(sessionId: string): Promise<number[]> {
-  const rows = await prisma.axisSnapshot.findMany({
-    where: { sessionId },
-    orderBy: { turn: "asc" },
-    select: { turn: true, confidence: true },
-  });
-  const byTurn = new Map<number, number[]>();
-  for (const r of rows) {
-    const list = byTurn.get(r.turn);
-    if (list) list.push(r.confidence);
-    else byTurn.set(r.turn, [r.confidence]);
-  }
-  return [...byTurn.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([, values]) => values.reduce((s, v) => s + v, 0) / values.length);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -271,118 +192,54 @@ export async function saveAskedQuestion(
       text: question.text,
       targetElements: serializeStringArray(question.target_elements),
       probeKind: question.probe_kind,
-      qValue: question.q_value,
+      mode: question.mode,
     },
   });
 }
 
-export interface PersistTurnInput {
-  sessionId: string;
-  turn: number;
-  /** Evidence with app-assigned ids; ids are re-mapped to DB ids on insert. */
-  evidence: Evidence[];
-  changedStates: Map<string, ElementState>;
-  newContradictions: Contradiction[];
-  resolutions: { contradiction_id: string; resolution_note: string }[];
-  axes: AxisAggregate[];
+/*
+ * `persistTurn` used to live here: one transaction writing a turn's evidence,
+ * element states, score history, contradictions and axis snapshots. It is gone
+ * along with the per-turn extraction that produced its input. Nothing writes to
+ * those tables now.
+ */
+
+/* -------------------------------------------------------------------------- */
+/* The reading                                                                 */
+/* -------------------------------------------------------------------------- */
+
+export async function loadReading(sessionId: string): Promise<Reading | null> {
+  const row = await prisma.reading.findUnique({ where: { sessionId } });
+  if (!row) return null;
+  return {
+    session_id: row.sessionId,
+    turn_count: row.turnCount,
+    topics: parseTopics(row.topics),
+  };
 }
 
 /**
- * Persists one turn's model update atomically.
- *
- * Evidence rows get their DB-generated ids here; the provisional ids used by the
- * engine are translated so contradictions and score histories keep pointing at
- * the right rows.
+ * Stores the reading. Upsert rather than create so a retry after a partial
+ * failure cannot collide with the unique constraint on sessionId.
  */
-export async function persistTurn(input: PersistTurnInput): Promise<void> {
-  const { sessionId, turn } = input;
-
-  await prisma.$transaction(async (tx) => {
-    const idMap = new Map<string, string>();
-
-    for (const e of input.evidence) {
-      const created = await tx.evidence.create({
-        data: {
-          sessionId,
-          turnId: e.turn_id,
-          elementId: e.element_id,
-          quote: e.quote,
-          type: e.type,
-          strength: e.strength,
-          reliability: e.reliability,
-          direction: e.direction,
-          context: e.context,
-        },
-        select: { id: true },
-      });
-      idMap.set(e.evidence_id, created.id);
-    }
-
-    const mapId = (provisional: string) => idMap.get(provisional) ?? provisional;
-
-    for (const [elementId, state] of input.changedStates) {
-      const updated = await tx.elementState.update({
-        where: { sessionId_elementId: { sessionId, elementId } },
-        data: {
-          score: state.score,
-          confidence: state.confidence,
-          evidenceCount: state.evidence_count,
-          evidenceDiversity: state.evidence_diversity,
-          evidenceTypes: serializeStringArray(state.evidence_type_set),
-          lastUpdatedTurn: state.last_updated_turn,
-        },
-        select: { id: true },
-      });
-
-      const latest = state.history[state.history.length - 1];
-      if (latest && latest.turn === turn) {
-        await tx.scoreHistory.create({
-          data: {
-            elementStateId: updated.id,
-            turn: latest.turn,
-            score: latest.score,
-            confidence: latest.confidence,
-            delta: latest.delta,
-            causeEvidenceIds: serializeStringArray(latest.cause_evidence_ids.map(mapId)),
-          },
-        });
-      }
-    }
-
-    for (const c of input.newContradictions) {
-      await tx.contradiction.create({
-        data: {
-          sessionId,
-          elementIds: serializeStringArray(c.elements),
-          evidenceAId: mapId(c.evidence_a),
-          evidenceBId: mapId(c.evidence_b),
-          severity: c.severity,
-          status: c.status,
-          detectedTurn: c.detected_turn,
-        },
-      });
-    }
-
-    for (const r of input.resolutions) {
-      await tx.contradiction.updateMany({
-        where: { id: r.contradiction_id, sessionId },
-        data: { status: "resolved", resolutionNote: r.resolution_note },
-      });
-    }
-
-    for (const axis of input.axes) {
-      await tx.axisSnapshot.create({
-        data: {
-          sessionId,
-          turn,
-          axisId: axis.axis_id,
-          score: axis.score,
-          confidence: axis.confidence,
-          coverage: axis.coverage,
-        },
-      });
-    }
-
-    await tx.session.update({ where: { id: sessionId }, data: { turnCount: turn } });
+export async function saveReading(reading: Reading): Promise<void> {
+  const data = {
+    turnCount: reading.turn_count,
+    topics: JSON.stringify(reading.topics),
+  };
+  await prisma.reading.upsert({
+    where: { sessionId: reading.session_id },
+    create: { sessionId: reading.session_id, ...data },
+    update: data,
   });
+}
+
+function parseTopics(raw: string): ReadingTopic[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as ReadingTopic[]) : [];
+  } catch {
+    console.error("[repository] stored reading is not valid JSON");
+    return [];
+  }
 }

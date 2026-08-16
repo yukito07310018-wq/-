@@ -34,8 +34,26 @@ model Session {
   contradictions Contradiction[]
   questions      QuestionHistory[]
   snapshots      AxisSnapshot[]
+  reading        Reading?
 
   @@index([status])
+}
+
+// The whole output of the app: one batch reading over the finished
+// conversation. Written exactly once per session — its presence is what stops
+// the result page calling the model a second time.
+//
+// ElementState / Evidence / ScoreHistory / Contradiction / AxisSnapshot below
+// are retained unchanged, but nothing reads or writes them any more. They are
+// the per-turn extraction's tables, kept so the decision to delete them can be
+// taken separately from this change.
+model Reading {
+  id        String   @id @default(cuid())
+  sessionId String   @unique
+  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  turnCount Int
+  topics    String // JSON array of {element_id, returns, first_turn, quotes[]}
+  createdAt DateTime @default(now())
 }
 
 model ConversationTurn {
@@ -121,7 +139,7 @@ model QuestionHistory {
   text           String
   targetElements String // JSON array
   probeKind      String
-  qValue         Float
+  mode           String   @default("deepen") // opening | deepen | switch
   createdAt      DateTime @default(now())
 
   @@index([sessionId])

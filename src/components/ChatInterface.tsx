@@ -3,16 +3,20 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import ProgressIndicator from "./ProgressIndicator";
+import { MAX_TURNS } from "@/lib/engine/terminationEngine";
 
 /**
  * §29 — the interview screen.
  *
- * Deliberately shows no scores during the interview: seeing the model update
- * would change what the user says next.
+ * Deliberately shows nothing about what is being read: seeing it would change
+ * what the user says next. Nothing is read during the interview anyway.
+ *
+ * 「ここまでにする」 is on screen from the first turn. With the reading happening
+ * once at the end, a session nobody ends is a session with no output at all, and
+ * both real sessions so far ended with the person simply leaving.
  */
 
 const MAX_CHARS = 4000;
-const EARLY_EXIT_MIN_TURNS = 5;
 
 interface Message {
   role: "ai" | "user";
@@ -37,6 +41,7 @@ export default function ChatInterface() {
   const [turn, setTurn] = useState(0);
   const [progress, setProgress] = useState(0);
   const [sending, setSending] = useState(false);
+  const [finishing, setFinishing] = useState(false);
   const [starting, setStarting] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [aborted, setAborted] = useState(false);
@@ -73,7 +78,7 @@ export default function ChatInterface() {
 
   async function send() {
     const text = input.trim();
-    if (!text || sending || !sessionId || aborted) return;
+    if (!text || sending || finishing || !sessionId || aborted) return;
 
     setMessages((prev) => [...prev, { role: "user", content: text }]);
     setInput("");
@@ -111,6 +116,32 @@ export default function ChatInterface() {
     }
   }
 
+  /** Ends the interview and reads it. The reading is the only output there is. */
+  async function finish() {
+    if (!sessionId || sending || finishing) return;
+    if (!confirm("ここまでの対話で読み取ります。これ以降は質問を続けられません。")) return;
+
+    setFinishing(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/interview/finish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data?.error?.message ?? "読み取りに失敗しました。");
+        return;
+      }
+      router.push(data.result_url);
+    } catch {
+      setError("読み取りに失敗しました。通信環境を確認してください。");
+    } finally {
+      setFinishing(false);
+    }
+  }
+
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -119,16 +150,15 @@ export default function ChatInterface() {
   }
 
   const overLimit = input.length > MAX_CHARS;
-  const canExitEarly = turn >= EARLY_EXIT_MIN_TURNS && !aborted;
 
   return (
     <div className="mx-auto flex h-screen max-w-3xl flex-col px-4 py-6">
       <header className="shrink-0 pb-4">
-        <ProgressIndicator progress={progress} turn={turn} />
+        <ProgressIndicator progress={progress} turn={turn} maxTurns={MAX_TURNS} />
       </header>
 
       <div className="flex-1 space-y-5 overflow-y-auto pr-1">
-        {starting && <p className="text-sm text-[color:var(--muted)]">診断を準備しています…</p>}
+        {starting && <p className="text-sm text-[color:var(--muted)]">対話を準備しています…</p>}
 
         {messages.map((m, i) => (
           <div key={i} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
@@ -147,7 +177,7 @@ export default function ChatInterface() {
         {sending && (
           <div className="flex justify-start">
             <div className="rounded-2xl rounded-bl-sm border border-[color:var(--border)] bg-[color:var(--surface)] px-4 py-3 text-sm text-[color:var(--muted)]">
-              回答を読み取っています…
+              考えています…
             </div>
           </div>
         )}
@@ -163,7 +193,7 @@ export default function ChatInterface() {
 
       {aborted ? (
         <div className="mt-4 shrink-0 rounded-xl border border-[color:var(--border)] bg-[color:var(--surface-2)] p-4 text-sm text-[color:var(--muted)]">
-          今回は診断を中断しました。結果の表示は行いません。
+          今回は対話を中断しました。結果の表示は行いません。
         </div>
       ) : (
         <div className="mt-4 shrink-0">
@@ -173,21 +203,19 @@ export default function ChatInterface() {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
               rows={3}
-              disabled={sending || starting || !sessionId}
+              disabled={sending || finishing || starting || !sessionId}
               placeholder="思い出したことを、そのまま書いてください。Enterで送信 / Shift+Enterで改行"
               className="w-full resize-none bg-transparent px-2 py-1 text-[15px] outline-none placeholder:text-[color:var(--muted)] disabled:opacity-50"
             />
             <div className="flex items-center justify-between px-2 pb-1">
               <span
-                className={
-                  overLimit ? "text-xs text-red-300" : "text-xs text-[color:var(--muted)]"
-                }
+                className={overLimit ? "text-xs text-red-300" : "text-xs text-[color:var(--muted)]"}
               >
                 {input.length} / {MAX_CHARS}
               </span>
               <button
                 onClick={() => void send()}
-                disabled={sending || starting || !input.trim() || overLimit}
+                disabled={sending || finishing || starting || !input.trim() || overLimit}
                 className="rounded-lg bg-[color:var(--accent)] px-4 py-1.5 text-sm font-semibold text-[#08111b] transition disabled:opacity-40"
               >
                 送信
@@ -195,16 +223,15 @@ export default function ChatInterface() {
             </div>
           </div>
 
-          <div className="mt-3 flex items-center justify-between text-xs text-[color:var(--muted)]">
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[color:var(--muted)]">
             <span>この診断は医学的・心理学的な診断ではありません。</span>
-            {canExitEarly && sessionId && (
-              <button
-                onClick={() => router.push(`/result/${sessionId}`)}
-                className="underline underline-offset-4 hover:text-[color:var(--foreground)]"
-              >
-                診断を中断して現時点の結果を見る
-              </button>
-            )}
+            <button
+              onClick={() => void finish()}
+              disabled={!sessionId || sending || finishing}
+              className="rounded-lg border border-[color:var(--border)] px-3 py-1.5 transition hover:text-[color:var(--foreground)] disabled:opacity-40"
+            >
+              {finishing ? "読み取っています…" : "ここまでにする"}
+            </button>
           </div>
         </div>
       )}

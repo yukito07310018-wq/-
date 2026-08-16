@@ -7,7 +7,9 @@
  *   node scripts/smokeInterview.mjs
  */
 const BASE = process.env.SMOKE_BASE_URL ?? "http://127.0.0.1:3000";
-const MAX = Number(process.env.SMOKE_TURNS ?? 32);
+const MAX = Number(process.env.SMOKE_TURNS ?? 12);
+/** Set to a number below the ceiling to exercise 「ここまでにする」 instead. */
+const STOP_AFTER = process.env.SMOKE_STOP_AFTER ? Number(process.env.SMOKE_STOP_AFTER) : null;
 
 const ANSWERS = [
   "去年、部署でトラブルが続いたときの話です。みんなは効率の問題だと言っていましたが、自分には信頼の問題に見えました。会議の形を変える案を出し、反対されましたが最後は自分の判断で進めました。",
@@ -39,6 +41,8 @@ console.log(`session ${sessionId}`);
 console.log(`Q0: ${start.json.first_question}\n`);
 
 let turn = 0;
+let completed = false;
+
 for (let i = 0; i < MAX; i++) {
   const answer = ANSWERS[i % ANSWERS.length];
   const { status, json } = await post("/api/interview/message", {
@@ -53,27 +57,28 @@ for (let i = 0; i < MAX; i++) {
   console.log(
     `turn ${String(json.turn).padStart(2)} progress=${json.progress.toFixed(3)} complete=${json.is_complete}`
   );
+  console.log(`   Q: ${json.reply.split("\n").filter(Boolean).pop()}`);
+
   if (json.is_complete) {
-    console.log(`\n完了: ${json.result_url}`);
+    completed = true;
+    console.log(`\n上限に到達して終了: ${json.result_url}`);
+    break;
+  }
+  if (STOP_AFTER !== null && turn >= STOP_AFTER) {
+    console.log(`\n「ここまでにする」を ${turn} 問目で実行します。`);
     break;
   }
 }
 
-const profile = await (await fetch(`${BASE}/api/profile/${sessionId}`)).json();
-const measured = Object.values(profile.elements).filter((e) => e.evidence_count > 0);
+// The reading happens once. Whichever way the interview ended, this is what
+// runs it; a session that already has one comes straight back.
+const finish = await post("/api/interview/finish", { session_id: sessionId });
+console.log(`\nfinish: HTTP ${finish.status} reading=${finish.json.reading_status}`);
 
-console.log(`\n--- final model (turn ${profile.turn}) ---`);
-console.log(`evidence:        ${profile.evidence.length}`);
-console.log(`elements w/ ev:  ${measured.length}`);
-console.log(`contradictions:  ${profile.contradictions.length} (unresolved ${profile.contradictions.filter((c) => c.status === "unresolved").length})`);
-console.log(`confidence:      ${profile.diagnosis_confidence.toFixed(4)}`);
-console.log(`coverage:        ${profile.coverage.toFixed(3)}`);
-console.log(`max diversity:   ${Math.max(0, ...measured.map((e) => e.evidence_diversity)).toFixed(3)}`);
-console.log(`max confidence:  ${Math.max(0, ...measured.map((e) => e.confidence)).toFixed(3)}`);
-console.log(`score range:     ${Math.min(...measured.map((e) => e.score)).toFixed(1)} – ${Math.max(...measured.map((e) => e.score)).toFixed(1)}`);
-console.log(
-  `axes NaN check:  ${profile.axis_insights.every((a) => Number.isFinite(a.score) && Number.isFinite(a.confidence)) ? "ok" : "FAILED"}`
-);
+// Calling it twice must not call the model twice.
+const again = await post("/api/interview/finish", { session_id: sessionId });
+console.log(`finish again: reading=${again.json.reading_status} (二重読み取りは起きないこと)`);
 
-console.log(`\nturn ${turn} reached.`);
+console.log(`\nturn ${turn} reached (completed=${completed}).`);
 console.log(`result page: ${BASE}/result/${sessionId}`);
+console.log(`stored rows: node scripts/inspectSession.mjs ${sessionId}`);
