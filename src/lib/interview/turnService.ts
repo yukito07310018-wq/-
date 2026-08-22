@@ -73,6 +73,7 @@ export async function processTurn(sessionId: string, message: string): Promise<T
 
   // --- Call A: evidence extraction (§22-3) ----------------------------------
   let analyst;
+  let analystErrorName: string | undefined;
   try {
     analyst = await runAnalystCall({
       question: lastQuestion,
@@ -90,8 +91,9 @@ export async function processTurn(sessionId: string, message: string): Promise<T
   } catch (error) {
     // §36 failure handling: a failed extraction must not stop the conversation.
     console.error("[turnService] analyst call failed, continuing with zero evidence:", error);
+    analystErrorName = error instanceof Error ? error.name : typeof error;
     console.warn(
-      `[debug:turnService] analyst error shape name=${error instanceof Error ? error.name : typeof error} cause=${error instanceof Error && error.cause instanceof Error ? error.cause.name : String(error instanceof Error ? error.cause : "")}`
+      `[debug:turnService] analyst error shape name=${analystErrorName} cause=${error instanceof Error && error.cause instanceof Error ? error.cause.name : String(error instanceof Error ? error.cause : "")}`
     );
     analyst = {
       evidence: [],
@@ -101,6 +103,13 @@ export async function processTurn(sessionId: string, message: string): Promise<T
       repaired: false,
     };
   }
+  // Single unconditional line so a small, unfiltered log copy still catches it:
+  // errorName set -> analyst call threw (candidate 2: timeout/transport).
+  // errorName unset, evidenceCount=0, rejectedCount=0 -> model returned zero drafts (candidate 3).
+  // errorName unset, evidenceCount=0, rejectedCount>0 -> quote verification rejected everything (candidate 1).
+  console.log(
+    `[debug:evidence] turn=${turn} evidenceCount=${analyst.evidence.length} rejected=${analyst.rejectedCount} duplicates=${analyst.duplicateCount} repaired=${analyst.repaired} errorName=${analystErrorName ?? "none"}`
+  );
 
   // --- deterministic model update (§22-4〜9) --------------------------------
   const update = applyTurn({
