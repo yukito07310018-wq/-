@@ -90,6 +90,9 @@ function finish(
       `[analystCall] ${duplicates.length} quotes already recorded on an earlier turn — not counted again`
     );
   }
+  console.log(
+    `[debug:analystCall] turn summary accepted=${kept.length} rejected=${meta.rejectedCount} duplicates=${duplicates.length} repaired=${meta.repaired}`
+  );
   return {
     evidence: kept,
     contradictionCandidates,
@@ -105,7 +108,7 @@ async function extractOnce(input: AnalystPromptInput, emphasiseQuotes = false) {
     ? `${base}\n\n重要: 前回の抽出では、ユーザーの発話に存在しない引用が含まれていました。quote は必ず上記 <user_answer> 内、または「直近の会話」の USER 行の文字列をそのまま切り出してください。AI 行から引用してはいけません。該当する引用が作れない証拠は出力しないでください。`
     : base;
 
-  return callModelStructured({
+  const result = await callModelStructured({
     label: "analyst",
     system: ANALYST_SYSTEM_PROMPT,
     user,
@@ -114,4 +117,8 @@ async function extractOnce(input: AnalystPromptInput, emphasiseQuotes = false) {
     prefill: '{"evidence":',
     schema: EvidenceExtractionSchema,
   });
+  console.log(
+    `[debug:analystCall] extractOnce emphasiseQuotes=${emphasiseQuotes} rawEvidenceCount=${result.evidence.length}`
+  );
+  return result;
 }

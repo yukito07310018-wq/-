@@ -105,6 +105,7 @@ export async function callModel(options: RawCallOptions): Promise<string> {
   for (let attempt = 0; attempt <= MAX_TRANSPORT_RETRIES; attempt++) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const startedAt = Date.now();
     try {
       const messages: Anthropic.MessageParam[] = [{ role: "user", content: options.user }];
       if (options.prefill) messages.push({ role: "assistant", content: options.prefill });
@@ -130,9 +131,17 @@ export async function callModel(options: RawCallOptions): Promise<string> {
         .filter((block): block is Anthropic.TextBlock => block.type === "text")
         .map((block) => block.text)
         .join("");
+      console.log(
+        `[debug:callModel] label=${options.label} attempt=${attempt} ok elapsedMs=${Date.now() - startedAt} textChars=${text.length}`
+      );
       return (options.prefill ?? "") + text;
     } catch (error) {
       lastError = error;
+      const status = typeof error === "object" && error !== null && "status" in error ? (error as { status?: number }).status : undefined;
+      const name = error instanceof Error ? error.name : typeof error;
+      console.warn(
+        `[debug:callModel] label=${options.label} attempt=${attempt} error elapsedMs=${Date.now() - startedAt} name=${name} status=${status} aborted=${controller.signal.aborted}`
+      );
       const retryable = isRetryableStatus(error) || controller.signal.aborted;
       if (!retryable || attempt === MAX_TRANSPORT_RETRIES) break;
       await sleep(1000 * 2 ** attempt);

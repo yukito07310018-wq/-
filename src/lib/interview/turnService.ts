@@ -90,6 +90,9 @@ export async function processTurn(sessionId: string, message: string): Promise<T
   } catch (error) {
     // §36 failure handling: a failed extraction must not stop the conversation.
     console.error("[turnService] analyst call failed, continuing with zero evidence:", error);
+    console.warn(
+      `[debug:turnService] analyst error shape name=${error instanceof Error ? error.name : typeof error} cause=${error instanceof Error && error.cause instanceof Error ? error.cause.name : String(error instanceof Error ? error.cause : "")}`
+    );
     analyst = {
       evidence: [],
       contradictionCandidates: [],
